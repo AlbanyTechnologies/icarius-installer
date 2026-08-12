@@ -233,8 +233,11 @@ EOF
 chmod 0755 /usr/local/bin/icarius-preparer
 
 say '5/5 - Iniciando el configurador'
-runuser -u "$OPERATOR" -- docker compose --env-file "$PREPARER_ROOT/preparer.env" -f "$PREPARER_ROOT/compose.yaml" pull
-runuser -u "$OPERATOR" -- docker compose --env-file "$PREPARER_ROOT/preparer.env" -f "$PREPARER_ROOT/compose.yaml" up -d
+(
+  cd "$PREPARER_ROOT"
+  runuser -u "$OPERATOR" -- docker compose --env-file preparer.env -f compose.yaml pull
+  runuser -u "$OPERATOR" -- docker compose --env-file preparer.env -f compose.yaml up -d
+)
 for _ in $(seq 1 30); do
   [[ -s "$INSTALL_ROOT/config/preparer-bootstrap-token.txt" ]] && break
   sleep 1
