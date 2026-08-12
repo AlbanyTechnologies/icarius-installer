@@ -155,7 +155,7 @@ cat > /usr/local/bin/icarius <<EOF
 set -e
 test -x "$INSTALL_ROOT/bin/icarius" || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
 export PATH="$NODE_ROOT/bin:\$PATH"
-exec runuser -u "$OPERATOR" -- "$INSTALL_ROOT/bin/icarius" "\$@"
+exec "$INSTALL_ROOT/bin/icarius" "\$@"
 EOF
 chmod 0755 /usr/local/bin/icarius
 
