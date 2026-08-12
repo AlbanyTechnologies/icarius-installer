@@ -33,6 +33,20 @@ ask_secret() {
   printf '\n' >/dev/tty
   printf '%s' "$answer"
 }
+managed_preparer_owns_port() {
+  local requested_port="$1" container_id bindings
+  command -v docker >/dev/null 2>&1 || return 1
+  while IFS= read -r container_id; do
+    [[ -n "$container_id" ]] || continue
+    bindings="$(docker inspect --format '{{range $bindings := .NetworkSettings.Ports}}{{range $binding := $bindings}}{{$binding.HostIp}} {{$binding.HostPort}}{{println}}{{end}}{{end}}' "$container_id" 2>/dev/null)" || continue
+    if printf '%s\n' "$bindings" | awk -v requested_port="$requested_port" '"x" $2 == "x" requested_port { found = 1 } END { exit !found }'; then
+      return 0
+    fi
+  done < <(docker ps -q \
+    --filter 'label=com.docker.compose.project=icarius-preparer-onprem' \
+    --filter 'label=com.docker.compose.service=preparer' 2>/dev/null)
+  return 1
+}
 decode_provisioning_code() {
   local code="$1" destination="$2"
   ICARIUS_PROVISIONING_CODE="$code" python3 - "$destination" <<'PY'
@@ -86,7 +100,11 @@ public_host="$(ask 'IP o DNS para abrir el configurador' "${public_guess:-localh
 preparer_port="$(ask 'Puerto temporal del configurador' '3500')"
 [[ "$preparer_port" =~ ^[0-9]+$ && "$preparer_port" -ge 1 && "$preparer_port" -le 65535 ]] || fail 'Puerto invalido.'
 if ss -lntH 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$preparer_port$"; then
-  fail "El puerto $preparer_port ya esta ocupado. Vuelva a ejecutar y elija otro."
+  if managed_preparer_owns_port "$preparer_port"; then
+    say 'El Preparador existente se actualizara en el mismo puerto.'
+  else
+    fail "El puerto $preparer_port ya esta ocupado. Vuelva a ejecutar y elija otro."
+  fi
 fi
 
 registry_token=''
