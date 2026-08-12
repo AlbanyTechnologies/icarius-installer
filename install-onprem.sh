@@ -97,6 +97,7 @@ printf '%s\n' 'Responda cuatro datos. Los valores confidenciales no se muestran.
 public_guess="$(hostname -I 2>/dev/null | awk '{print $1}')"
 public_host="$(ask 'IP o DNS para abrir el configurador' "${public_guess:-localhost}")"
 [[ "$public_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || fail 'IP o DNS invalido. Use solo letras, numeros, puntos y guiones; no incluya protocolo, puerto ni ruta.'
+preparer_host="$public_host"
 preparer_port="$(ask 'Puerto temporal del configurador' '3500')"
 [[ "$preparer_port" =~ ^[0-9]+$ && "$preparer_port" -ge 1 && "$preparer_port" -le 65535 ]] || fail 'Puerto invalido.'
 if ss -lntH 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$preparer_port$"; then
@@ -324,6 +325,7 @@ if [[ "$bootstrap_state" == 'token' ]]; then
   printf '%s\n' 'No comparta este enlace: permite crear el administrador inicial.'
 else
   printf '%s\n' 'Configurador actualizado. El administrador existente fue conservado.'
+  printf 'Abra el configurador: https://%s:%s/\n' "$preparer_host" "$preparer_port"
 fi
 printf '%s\n' 'Despues de preparar visualmente ejecute:'
 printf '%s\n' '  sudo icarius start'
