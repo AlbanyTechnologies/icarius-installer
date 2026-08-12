@@ -153,6 +153,7 @@ fi
 cat > /usr/local/bin/icarius <<EOF
 #!/usr/bin/env bash
 set -e
+export DOCKER_CONFIG=/home/icarius/.docker
 test -x "$INSTALL_ROOT/bin/icarius" || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
 export PATH="$NODE_ROOT/bin:\$PATH"
 exec "$INSTALL_ROOT/bin/icarius" "\$@"
