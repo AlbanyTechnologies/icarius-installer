@@ -67,7 +67,7 @@ if [[ "${1:-}" == '--decode-provisioning-code' ]]; then
   exit 0
 fi
 if [[ "${1:-}" == '--help' ]]; then
-  printf '%s\n' 'Uso: curl -fsSL URL_OFICIAL | sudo bash'
+  printf '%s\n' 'Uso: curl -fsSL https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-onprem.sh | sudo bash'
   exit 0
 fi
 
