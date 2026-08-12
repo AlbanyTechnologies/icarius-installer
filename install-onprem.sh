@@ -245,6 +245,17 @@ case "\${1:-status}" in
   stop) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env down ;;
   status) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env ps ;;
   logs) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env logs --tail 100 ;;
+  reset-auth)
+    runuser -u "$OPERATOR" -- docker compose --env-file preparer.env stop preparer
+    if ! runuser -u "$OPERATOR" -- docker compose --env-file preparer.env run --rm --no-deps preparer node docker/preparer/app/reset-auth.js --root /workspace; then
+      runuser -u "$OPERATOR" -- docker compose --env-file preparer.env up -d preparer || true
+      echo 'No se pudo reiniciar el acceso. El configurador anterior volvio a iniciarse.' >&2
+      exit 1
+    fi
+    runuser -u "$OPERATOR" -- docker compose --env-file preparer.env up -d preparer
+    echo 'Acceso reiniciado. Abra este enlace privado antes de 30 minutos:'
+    exec "\$0" activation
+    ;;
   activation)
     public_host=\$(sed -n 's/^ICARIUS_PREPARER_PUBLIC_HOST=//p' preparer.env)
     public_port=\$(sed -n 's/^ICARIUS_PREPARER_HOST_PORT=//p' preparer.env)
@@ -256,7 +267,7 @@ case "\${1:-status}" in
     [[ "\$activation" =~ ^[A-Za-z0-9_-]+\$ ]] || { echo 'El token de activacion almacenado no es valido.' >&2; exit 1; }
     printf 'https://%s:%s/#activation=%s\n' "\$public_host" "\$public_port" "\$activation"
     ;;
-  *) echo 'Uso: icarius-preparer start|stop|status|logs|activation' >&2; exit 1 ;;
+  *) echo 'Uso: icarius-preparer start|stop|status|logs|activation|reset-auth' >&2; exit 1 ;;
 esac
 EOF
 chmod 0755 /usr/local/bin/icarius-preparer
