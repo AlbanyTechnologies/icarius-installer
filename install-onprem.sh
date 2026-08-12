@@ -278,20 +278,53 @@ say '5/5 - Iniciando el configurador'
   runuser -u "$OPERATOR" -- docker compose --env-file preparer.env -f compose.yaml pull
   runuser -u "$OPERATOR" -- docker compose --env-file preparer.env -f compose.yaml up -d
 )
+bootstrap_token_file="$INSTALL_ROOT/config/preparer-bootstrap-token.txt"
+preparer_auth_file="$INSTALL_ROOT/config/preparer-auth.json"
+bootstrap_state=''
+preparer_is_enrolled() {
+  python3 - "$preparer_auth_file" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as source:
+        state = json.load(source)
+except (OSError, ValueError):
+    raise SystemExit(1)
+# Accept only the exact JSON state bootstrap.used === true.
+bootstrap = state.get("bootstrap") if isinstance(state, dict) else None
+raise SystemExit(0 if isinstance(bootstrap, dict) and bootstrap.get("used") is True else 1)
+PY
+}
 for _ in $(seq 1 30); do
-  [[ -s "$INSTALL_ROOT/config/preparer-bootstrap-token.txt" ]] && break
+  if [[ -s "$bootstrap_token_file" ]]; then
+    bootstrap_state='token'
+    break
+  fi
+  if preparer_is_enrolled; then
+    bootstrap_state='enrolled'
+    break
+  fi
   sleep 1
 done
-[[ -s "$INSTALL_ROOT/config/preparer-bootstrap-token.txt" ]] || fail 'El configurador no inicio. Ejecute: icarius-preparer logs'
+if [[ -s "$bootstrap_token_file" ]]; then
+  bootstrap_state='token'
+elif preparer_is_enrolled; then
+  bootstrap_state='enrolled'
+else
+  fail 'El configurador no inicio. Ejecute: icarius-preparer logs'
+fi
 
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
   ufw allow "$preparer_port/tcp" comment 'ICARIUS Preparer temporal' >/dev/null
 fi
 
 say 'INSTALACION GUIADA LISTA'
-printf '%s\n' 'Abra este enlace privado para crear el administrador:'
-/usr/local/bin/icarius-preparer activation
-printf '%s\n' 'No comparta este enlace: permite crear el administrador inicial.'
+if [[ "$bootstrap_state" == 'token' ]]; then
+  printf '%s\n' 'Abra este enlace privado para crear el administrador:'
+  /usr/local/bin/icarius-preparer activation
+  printf '%s\n' 'No comparta este enlace: permite crear el administrador inicial.'
+else
+  printf '%s\n' 'Configurador actualizado. El administrador existente fue conservado.'
+fi
 printf '%s\n' 'Despues de preparar visualmente ejecute:'
 printf '%s\n' '  sudo icarius start'
 printf '%s\n' 'Cuando ICARIUS funcione cierre el configurador:'
