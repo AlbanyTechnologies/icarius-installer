@@ -225,6 +225,7 @@ services:
       ICARIUS_PREPARER_WORKSPACE: /workspace
       ICARIUS_PREPARER_TLS: "true"
       ICARIUS_PREPARER_PUBLIC_HOST: ${ICARIUS_PREPARER_PUBLIC_HOST}
+      ICARIUS_PREPARER_HOST_MODE: vps
     volumes:
       - "${ICARIUS_INSTALLATION_ROOT}:/workspace"
       - "${ICARIUS_PREPARER_SECRETS_ROOT}:/run/secrets:ro"
