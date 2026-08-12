@@ -236,6 +236,8 @@ services:
     cap_drop: [ALL]
     restart: unless-stopped
 YAML
+printf '\nICARIUS_HOST_UID=1000\nICARIUS_HOST_GID=1000\n' >> $PREPARER_ROOT/preparer.env
+chown -R 1000:1000 $INSTALL_ROOT $SECRETS_ROOT
 chown -R "$OPERATOR:$OPERATOR" "$PREPARER_ROOT"
 chmod 0600 "$PREPARER_ROOT/preparer.env"
 
