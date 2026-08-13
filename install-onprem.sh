@@ -195,8 +195,8 @@ cat > "/usr/local/bin/$APP_COMMAND" <<EOF
 #!/usr/bin/env bash
 set -e
 export DOCKER_CONFIG="$DOCKER_CONFIG_ROOT"
-if [[ "${1:-}" == setup-web || "${1:-}" == ssh-host ]]; then
-  exec "$HOST_ASSISTANT" "$1" "$INSTALL_ROOT"
+if [[ "\${1:-}" == setup-web || "\${1:-}" == ssh-host ]]; then
+  exec "$HOST_ASSISTANT" "\${1:-}" "$INSTALL_ROOT"
 fi
 test -x "$INSTALL_ROOT/bin/icarius" || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
 export PATH="$NODE_ROOT/bin:\$PATH"
