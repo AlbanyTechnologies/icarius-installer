@@ -217,6 +217,7 @@ fi
 chown "$OPERATOR:$OPERATOR" "$SECRETS_ROOT"/*
 chmod 0600 "$SECRETS_ROOT"/*
 install -d -o 1000 -g 1000 -m 0700 "$INSTALL_ROOT/secrets"
+install -d -o 1000 -g 1000 -m 0750 "$INSTALL_ROOT/data/private/temp"
 if [[ ! -s "$INSTALL_ROOT/secrets/$KEYS_NAME" ]]; then
   install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/$KEYS_NAME" "$INSTALL_ROOT/secrets/$KEYS_NAME"
 fi
