@@ -76,16 +76,24 @@ managed_preparer_owns_port() {
   return 1
 }
 decode_provisioning_code() {
-  local code="$1" destination="$2"
-  ICARIUS_PROVISIONING_CODE="$code" python3 - "$destination" <<'PY'
+  local code="$1" destination="$2" sendgrid_destination="${3:-}"
+  ICARIUS_PROVISIONING_CODE="$code" python3 - "$destination" "$sendgrid_destination" <<'PY'
 import base64, hashlib, json, os, pathlib, re, sys
 parts = os.environ.pop("ICARIUS_PROVISIONING_CODE", "").strip().split(".")
-if len(parts) != 3 or parts[0] != "ICARIUS1" or not re.fullmatch(r"[a-f0-9]{64}", parts[2]):
+if len(parts) != 3 or parts[0] not in ("ICARIUS1", "ICARIUS2") or not re.fullmatch(r"[a-f0-9]{64}", parts[2]):
     raise SystemExit("Codigo de aprovisionamiento invalido.")
 payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
 if hashlib.sha256(payload).hexdigest() != parts[2]:
     raise SystemExit("El codigo esta incompleto o fue alterado.")
-keys = json.loads(payload)
+decoded = json.loads(payload)
+if parts[0] == "ICARIUS2":
+    if decoded.get("schema") != 2 or not isinstance(decoded.get("keys"), dict):
+        raise SystemExit("El codigo de aprovisionamiento no corresponde a ICARIUS.")
+    keys = decoded["keys"]
+    sendgrid_key = decoded.get("sendgridKey", "").strip()
+else:
+    keys = decoded
+    sendgrid_key = ""
 required = {
   "master": ["jwt_encryption_key", "jwt_encryption_salt", "jwt_sign_key"],
   "application": ["encryption_key", "encryption_salt", "hash_salt", "jwt_sign_key",
@@ -101,11 +109,17 @@ for section, names in required.items():
 target = pathlib.Path(sys.argv[1])
 target.write_text(json.dumps(keys, separators=(",", ":")) + "\n", encoding="utf-8")
 target.chmod(0o600)
+if len(sys.argv) > 2 and sys.argv[2]:
+    if not re.fullmatch(r"SG\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", sendgrid_key):
+        raise SystemExit("El codigo es antiguo o no contiene la credencial oficial de SendGrid. Genere uno nuevo.")
+    sendgrid_target = pathlib.Path(sys.argv[2])
+    sendgrid_target.write_text(sendgrid_key + "\n", encoding="utf-8")
+    sendgrid_target.chmod(0o600)
 PY
 }
 if [[ "${1:-}" == '--decode-provisioning-code' ]]; then
-  [[ $# -eq 3 ]] || fail 'Uso: --decode-provisioning-code CODIGO DESTINO'
-  decode_provisioning_code "$2" "$3"
+  [[ $# -eq 3 || $# -eq 4 ]] || fail 'Uso: --decode-provisioning-code CODIGO DESTINO [SENDGRID_DESTINO]'
+  decode_provisioning_code "$2" "$3" "${4:-}"
   exit 0
 fi
 if [[ "${1:-}" == '--help' ]]; then
@@ -146,7 +160,7 @@ if [[ ! -s "$SECRETS_ROOT/ghcr_read_token" ]]; then
   [[ -n "$registry_token" ]] || fail 'El token es obligatorio en la primera instalacion.'
 fi
 provisioning_code=''
-if [[ ! -s "$SECRETS_ROOT/$KEYS_NAME" ]]; then
+if [[ ! -s "$SECRETS_ROOT/$KEYS_NAME" || ! -s "$SECRETS_ROOT/sendgrid_key" ]]; then
   provisioning_code="$(ask_secret 'Codigo de aprovisionamiento ICARIUS')"
   [[ -n "$provisioning_code" ]] || fail 'El codigo de aprovisionamiento es obligatorio.'
 fi
@@ -209,7 +223,15 @@ if [[ -n "$registry_token" ]]; then
   printf '%s' "$registry_token" > "$SECRETS_ROOT/ghcr_read_token"
 fi
 if [[ -n "$provisioning_code" ]]; then
-  decode_provisioning_code "$provisioning_code" "$SECRETS_ROOT/$KEYS_NAME"
+  if [[ -z "$temporary" || ! -d "$temporary" ]]; then temporary="$(mktemp -d)"; fi
+  decoded_keys="$temporary/$KEYS_NAME"
+  decoded_sendgrid="$temporary/sendgrid_key"
+  decode_provisioning_code "$provisioning_code" "$decoded_keys" "$decoded_sendgrid"
+  if [[ -s "$SECRETS_ROOT/$KEYS_NAME" ]] && ! cmp -s "$SECRETS_ROOT/$KEYS_NAME" "$decoded_keys"; then
+    fail 'El codigo usa claves ICARIUS distintas de esta instalacion. No se modifico ningun secreto.'
+  fi
+  install -m 0600 "$decoded_keys" "$SECRETS_ROOT/$KEYS_NAME"
+  install -m 0600 "$decoded_sendgrid" "$SECRETS_ROOT/sendgrid_key"
 fi
 if [[ -n "$cloud_url_key" ]]; then
   printf '%s' "$cloud_url_key" > "$SECRETS_ROOT/cloud_url_key"
@@ -221,6 +243,7 @@ install -d -o 1000 -g 1000 -m 0750 "$INSTALL_ROOT/data/private/temp"
 if [[ ! -s "$INSTALL_ROOT/secrets/$KEYS_NAME" ]]; then
   install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/$KEYS_NAME" "$INSTALL_ROOT/secrets/$KEYS_NAME"
 fi
+install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/sendgrid_key" "$INSTALL_ROOT/secrets/sendgrid_key"
 if [[ "$EDITION" == cloud && ! -s "$INSTALL_ROOT/secrets/cloud_url_key" ]]; then
   install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/cloud_url_key" "$INSTALL_ROOT/secrets/cloud_url_key"
 fi
