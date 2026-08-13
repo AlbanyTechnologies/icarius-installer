@@ -188,10 +188,16 @@ if [[ ! -x "$NODE_ROOT/bin/node" ]]; then
   install -d -m 0755 /opt/icarius
   tar -xJf "$temporary/node.tar.xz" -C /opt/icarius
 fi
+HOST_ASSISTANT='/opt/icarius/icarius-host-assistant.sh'
+curl -fsSL https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/icarius-host-assistant.sh -o "$HOST_ASSISTANT"
+chmod 0755 "$HOST_ASSISTANT"
 cat > "/usr/local/bin/$APP_COMMAND" <<EOF
 #!/usr/bin/env bash
 set -e
 export DOCKER_CONFIG="$DOCKER_CONFIG_ROOT"
+if [[ "${1:-}" == setup-web || "${1:-}" == ssh-host ]]; then
+  exec "$HOST_ASSISTANT" "$1" "$INSTALL_ROOT"
+fi
 test -x "$INSTALL_ROOT/bin/icarius" || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
 export PATH="$NODE_ROOT/bin:\$PATH"
 exec "$INSTALL_ROOT/bin/icarius" "\$@"
