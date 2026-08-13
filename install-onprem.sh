@@ -216,6 +216,13 @@ if [[ -n "$cloud_url_key" ]]; then
 fi
 chown "$OPERATOR:$OPERATOR" "$SECRETS_ROOT"/*
 chmod 0600 "$SECRETS_ROOT"/*
+install -d -o 1000 -g 1000 -m 0700 "$INSTALL_ROOT/secrets"
+if [[ ! -s "$INSTALL_ROOT/secrets/$KEYS_NAME" ]]; then
+  install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/$KEYS_NAME" "$INSTALL_ROOT/secrets/$KEYS_NAME"
+fi
+if [[ "$EDITION" == cloud && ! -s "$INSTALL_ROOT/secrets/cloud_url_key" ]]; then
+  install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/cloud_url_key" "$INSTALL_ROOT/secrets/cloud_url_key"
+fi
 unset provisioning_code cloud_url_key
 
 if [[ -z "$temporary" || ! -d "$temporary" ]]; then
