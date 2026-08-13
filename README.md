@@ -8,7 +8,10 @@ El instalador de soporte debe conectarse por SSH y ejecutar:
 curl -fsSL https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-onprem.sh | sudo bash
 ```
 
-El asistente instala los requisitos del host y solicita únicamente la IP o DNS, el puerto temporal del configurador y las dos credenciales confidenciales entregadas por soporte ICARIUS.
+El asistente instala los requisitos del host y solicita únicamente la IP o DNS,
+el puerto temporal del configurador y una credencial confidencial `ICARIUS3`
+entregada por soporte ICARIUS. La credencial es reutilizable y está separada por
+edición: On-Premise nunca autoriza imágenes Central Cloud y viceversa.
 
 ## Plataformas
 

@@ -76,17 +76,40 @@ managed_preparer_owns_port() {
   return 1
 }
 decode_provisioning_code() {
-  local code="$1" destination="$2" sendgrid_destination="${3:-}"
-  ICARIUS_PROVISIONING_CODE="$code" python3 - "$destination" "$sendgrid_destination" <<'PY'
+  local code="$1" destination="$2" sendgrid_destination="${3:-}" registry_destination="${4:-}" cloud_destination="${5:-}" expected_edition="${6:-}"
+  ICARIUS_PROVISIONING_CODE="$code" python3 - "$destination" "$sendgrid_destination" "$registry_destination" "$cloud_destination" "$expected_edition" <<'PY'
 import base64, hashlib, json, os, pathlib, re, sys
 parts = os.environ.pop("ICARIUS_PROVISIONING_CODE", "").strip().split(".")
-if len(parts) != 3 or parts[0] not in ("ICARIUS1", "ICARIUS2") or not re.fullmatch(r"[a-f0-9]{64}", parts[2]):
+if len(parts) != 3 or parts[0] not in ("ICARIUS1", "ICARIUS2", "ICARIUS3") or not re.fullmatch(r"[a-f0-9]{64}", parts[2]):
     raise SystemExit("Codigo de aprovisionamiento invalido.")
 payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
 if hashlib.sha256(payload).hexdigest() != parts[2]:
     raise SystemExit("El codigo esta incompleto o fue alterado.")
 decoded = json.loads(payload)
-if parts[0] == "ICARIUS2":
+registry_token = ""
+cloud_url_key = ""
+if parts[0] == "ICARIUS3":
+    profiles = {
+      "on-premise": {"registryUser": "soporteicarius", "packages": ["icarius-onprem-api", "icarius-onprem-release-catalog", "icarius-onprem-scheduler", "icarius-preparer-onprem", "icarius-ssh-tunnel"]},
+      "central-cloud": {"registryUser": "adminicarius", "packages": ["icarius-cloud-api", "icarius-cloud-release-catalog", "icarius-cloud-scheduler", "icarius-preparer-cloud", "icarius-ssh-tunnel"]}
+    }
+    expected = {"onprem": "on-premise", "cloud": "central-cloud"}.get(sys.argv[5], sys.argv[5])
+    profile = profiles.get(decoded.get("edition"))
+    if decoded.get("schema") != 3 or not profile or decoded.get("edition") != expected:
+        raise SystemExit("El codigo ICARIUS no corresponde a esta edicion.")
+    if decoded.get("registry") != "ghcr.io" or decoded.get("registryUser") != profile["registryUser"] or decoded.get("packages") != profile["packages"]:
+        raise SystemExit("El codigo ICARIUS no corresponde a un perfil autorizado.")
+    keys = decoded.get("keys")
+    sendgrid_key = str(decoded.get("sendgridKey", "")).strip()
+    registry_token = str(decoded.get("registryToken", "")).strip()
+    cloud_url_key = str(decoded.get("cloudUrlKey", "")).strip()
+    if not registry_token or len(registry_token) > 4096 or any(character in registry_token for character in "\r\n\0"):
+        raise SystemExit("El codigo ICARIUS no contiene una credencial de descarga valida.")
+    if expected == "central-cloud" and (not cloud_url_key or len(cloud_url_key) > 4096 or any(character in cloud_url_key for character in "\r\n\0")):
+        raise SystemExit("El codigo ICARIUS no contiene la clave privada de URL Cloud.")
+    if expected == "on-premise" and cloud_url_key:
+        raise SystemExit("El codigo ICARIUS On-Premise contiene material Cloud no autorizado.")
+elif parts[0] == "ICARIUS2":
     if decoded.get("schema") != 2 or not isinstance(decoded.get("keys"), dict):
         raise SystemExit("El codigo de aprovisionamiento no corresponde a ICARIUS.")
     keys = decoded["keys"]
@@ -115,11 +138,23 @@ if len(sys.argv) > 2 and sys.argv[2]:
     sendgrid_target = pathlib.Path(sys.argv[2])
     sendgrid_target.write_text(sendgrid_key + "\n", encoding="utf-8")
     sendgrid_target.chmod(0o600)
+if len(sys.argv) > 3 and sys.argv[3]:
+    if parts[0] != "ICARIUS3":
+        raise SystemExit("El codigo ICARIUS2 no contiene la credencial de descarga. Genere ICARIUS3 o complete el flujo compatible.")
+    registry_target = pathlib.Path(sys.argv[3])
+    registry_target.write_text(registry_token + "\n", encoding="utf-8")
+    registry_target.chmod(0o600)
+if len(sys.argv) > 4 and sys.argv[4]:
+    if parts[0] != "ICARIUS3" or not cloud_url_key:
+        raise SystemExit("El codigo no contiene la clave privada de URL Cloud.")
+    cloud_target = pathlib.Path(sys.argv[4])
+    cloud_target.write_text(cloud_url_key + "\n", encoding="utf-8")
+    cloud_target.chmod(0o600)
 PY
 }
 if [[ "${1:-}" == '--decode-provisioning-code' ]]; then
-  [[ $# -eq 3 || $# -eq 4 ]] || fail 'Uso: --decode-provisioning-code CODIGO DESTINO [SENDGRID_DESTINO]'
-  decode_provisioning_code "$2" "$3" "${4:-}"
+  [[ $# -ge 3 && $# -le 7 ]] || fail 'Uso: --decode-provisioning-code CODIGO DESTINO [SENDGRID_DESTINO] [REGISTRY_DESTINO] [CLOUD_DESTINO] [EDICION]'
+  decode_provisioning_code "$2" "$3" "${4:-}" "${5:-}" "${6:-}" "${7:-}"
   exit 0
 fi
 if [[ "${1:-}" == '--help' ]]; then
@@ -134,11 +169,7 @@ fi
 [[ "$(uname -m)" == x86_64 ]] || fail 'Se requiere arquitectura x86_64.'
 
 say "Asistente de instalacion - $PRODUCT"
-if [[ "$EDITION" == cloud ]]; then
-  printf '%s\n' 'Responda cinco datos. Los valores confidenciales no se muestran.'
-else
-  printf '%s\n' 'Responda cuatro datos. Los valores confidenciales no se muestran.'
-fi
+printf '%s\n' 'Confirme el acceso al configurador. Los valores sugeridos se aceptan con Enter.'
 
 public_guess="$(hostname -I 2>/dev/null | awk '{print $1}')"
 public_host="$(ask 'IP o DNS para abrir el configurador' "${public_guess:-localhost}")"
@@ -154,20 +185,19 @@ if ss -lntH 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$preparer_port$"; the
   fi
 fi
 
-registry_token=''
-if [[ ! -s "$SECRETS_ROOT/ghcr_read_token" ]]; then
-  registry_token="$(ask_secret 'Token de instalacion')"
-  [[ -n "$registry_token" ]] || fail 'El token es obligatorio en la primera instalacion.'
-fi
 provisioning_code=''
-if [[ ! -s "$SECRETS_ROOT/$KEYS_NAME" || ! -s "$SECRETS_ROOT/sendgrid_key" ]]; then
-  provisioning_code="$(ask_secret 'Codigo de aprovisionamiento ICARIUS')"
-  [[ -n "$provisioning_code" ]] || fail 'El codigo de aprovisionamiento es obligatorio.'
-fi
+registry_token=''
 cloud_url_key=''
+needs_provisioning=false
+for required_file in "$SECRETS_ROOT/ghcr_read_token" "$SECRETS_ROOT/$KEYS_NAME" "$SECRETS_ROOT/sendgrid_key"; do
+  [[ -s "$required_file" ]] || needs_provisioning=true
+done
 if [[ "$EDITION" == cloud && ! -s "$SECRETS_ROOT/cloud_url_key" ]]; then
-  cloud_url_key="$(ask_secret 'Clave de URL Cloud')"
-  [[ -n "$cloud_url_key" ]] || fail 'La clave de URL Cloud es obligatoria.'
+  needs_provisioning=true
+fi
+if [[ "$needs_provisioning" == true ]]; then
+  provisioning_code="$(ask_secret "Credencial ICARIUS3 $PRODUCT")"
+  [[ -n "$provisioning_code" ]] || fail 'La credencial ICARIUS3 es obligatoria en la primera instalacion.'
 fi
 
 say '1/5 - Preparando el servidor'
@@ -219,22 +249,41 @@ EOF
 chmod 0755 "/usr/local/bin/$APP_COMMAND"
 
 say '3/5 - Guardando credenciales protegidas'
-if [[ -n "$registry_token" ]]; then
-  printf '%s' "$registry_token" > "$SECRETS_ROOT/ghcr_read_token"
-fi
 if [[ -n "$provisioning_code" ]]; then
   if [[ -z "$temporary" || ! -d "$temporary" ]]; then temporary="$(mktemp -d)"; fi
   decoded_keys="$temporary/$KEYS_NAME"
   decoded_sendgrid="$temporary/sendgrid_key"
-  decode_provisioning_code "$provisioning_code" "$decoded_keys" "$decoded_sendgrid"
+  decoded_registry="$temporary/ghcr_read_token"
+  decoded_cloud="$temporary/cloud_url_key"
+  if [[ "$provisioning_code" == ICARIUS3.* ]]; then
+    cloud_output=''
+    [[ "$EDITION" == cloud ]] && cloud_output="$decoded_cloud"
+    decode_provisioning_code "$provisioning_code" "$decoded_keys" "$decoded_sendgrid" "$decoded_registry" "$cloud_output" "$EDITION"
+  elif [[ "$provisioning_code" == ICARIUS2.* ]]; then
+    printf '%s\n' 'Compatibilidad ICARIUS2: complete solamente las credenciales que el codigo anterior no contiene.'
+    decode_provisioning_code "$provisioning_code" "$decoded_keys" "$decoded_sendgrid"
+    if [[ ! -s "$SECRETS_ROOT/ghcr_read_token" ]]; then
+      registry_token="$(ask_secret 'Credencial de descarga de imagenes GHCR')"
+      [[ -n "$registry_token" ]] || fail 'La credencial de descarga es obligatoria.'
+      printf '%s' "$registry_token" > "$decoded_registry"
+    fi
+    if [[ "$EDITION" == cloud && ! -s "$SECRETS_ROOT/cloud_url_key" ]]; then
+      cloud_url_key="$(ask_secret 'Clave privada de URL Cloud')"
+      [[ -n "$cloud_url_key" ]] || fail 'La clave privada de URL Cloud es obligatoria.'
+      printf '%s' "$cloud_url_key" > "$decoded_cloud"
+    fi
+  else
+    fail 'Use una credencial ICARIUS3 o un codigo ICARIUS2 compatible.'
+  fi
   if [[ -s "$SECRETS_ROOT/$KEYS_NAME" ]] && ! cmp -s "$SECRETS_ROOT/$KEYS_NAME" "$decoded_keys"; then
     fail 'El codigo usa claves ICARIUS distintas de esta instalacion. No se modifico ningun secreto.'
   fi
-  install -m 0600 "$decoded_keys" "$SECRETS_ROOT/$KEYS_NAME"
-  install -m 0600 "$decoded_sendgrid" "$SECRETS_ROOT/sendgrid_key"
-fi
-if [[ -n "$cloud_url_key" ]]; then
-  printf '%s' "$cloud_url_key" > "$SECRETS_ROOT/cloud_url_key"
+  [[ -s "$SECRETS_ROOT/$KEYS_NAME" ]] || install -m 0600 "$decoded_keys" "$SECRETS_ROOT/$KEYS_NAME"
+  [[ -s "$SECRETS_ROOT/sendgrid_key" ]] || install -m 0600 "$decoded_sendgrid" "$SECRETS_ROOT/sendgrid_key"
+  [[ -s "$SECRETS_ROOT/ghcr_read_token" ]] || install -m 0600 "$decoded_registry" "$SECRETS_ROOT/ghcr_read_token"
+  if [[ "$EDITION" == cloud && ! -s "$SECRETS_ROOT/cloud_url_key" ]]; then
+    install -m 0600 "$decoded_cloud" "$SECRETS_ROOT/cloud_url_key"
+  fi
 fi
 chown "$OPERATOR:$OPERATOR" "$SECRETS_ROOT"/*
 chmod 0600 "$SECRETS_ROOT"/*
@@ -247,15 +296,12 @@ install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/sendgrid_key" "$INSTALL_ROOT/secr
 if [[ "$EDITION" == cloud && ! -s "$INSTALL_ROOT/secrets/cloud_url_key" ]]; then
   install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/cloud_url_key" "$INSTALL_ROOT/secrets/cloud_url_key"
 fi
-unset provisioning_code cloud_url_key
+unset provisioning_code cloud_url_key registry_token
 
 if [[ -z "$temporary" || ! -d "$temporary" ]]; then
   temporary="$(mktemp -d)"
 fi
-if [[ -n "$registry_token" ]]; then
-  printf '%s' "$registry_token" | runuser -u "$OPERATOR" -- env HOME="/home/$OPERATOR" DOCKER_CONFIG="$DOCKER_CONFIG_ROOT" docker login ghcr.io -u "$REGISTRY_USER" --password-stdin >/dev/null
-fi
-unset registry_token
+cat "$SECRETS_ROOT/ghcr_read_token" | runuser -u "$OPERATOR" -- env HOME="/home/$OPERATOR" DOCKER_CONFIG="$DOCKER_CONFIG_ROOT" docker login ghcr.io -u "$REGISTRY_USER" --password-stdin >/dev/null
 
 say '4/5 - Buscando la version autorizada'
 read_token="$(cat "$SECRETS_ROOT/ghcr_read_token")"
