@@ -34,4 +34,19 @@ y componentes reemplazables; conserva datos de clientes, configuracion,
 secretos, certificados, backups y auditoria para una reinstalacion o migracion.
 Nunca ejecuta una limpieza Docker global ni elimina volumenes.
 
+## Exportar una migracion
+
+Una instalacion Ubuntu puede generar el mismo paquete cifrado que el
+exportador Windows, sin detener servicios ni seleccionar carpetas a mano:
+
+```bash
+sudo icarius export-migration
+# Central Cloud:
+sudo icarius-cloud export-migration
+```
+
+Se generan un archivo `.icarius-migration`, su passphrase separada y una suma
+SHA-256. Los tres archivos deben copiarse fuera del servidor. No se incluyen
+imagenes, releases, logs, runtime ni contraseñas operativas.
+
 Copyright Albany Technologies. Todos los derechos reservados.

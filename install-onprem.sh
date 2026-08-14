@@ -240,7 +240,7 @@ cat > "/usr/local/bin/$APP_COMMAND" <<EOF
 set -e
 export DOCKER_CONFIG="$DOCKER_CONFIG_ROOT"
 export PATH="$NODE_ROOT/bin:\$PATH"
-if [[ "\${1:-}" == setup-web || "\${1:-}" == ssh-host || "\${1:-}" == uninstall ]]; then
+if [[ "\${1:-}" == setup-web || "\${1:-}" == ssh-host || "\${1:-}" == export-migration || "\${1:-}" == uninstall ]]; then
   exec "$HOST_ASSISTANT" "\${1:-}" "$INSTALL_ROOT" "\${2:-}"
 fi
 test -x "$INSTALL_ROOT/bin/icarius" || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }

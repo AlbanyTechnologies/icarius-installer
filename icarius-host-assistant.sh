@@ -230,9 +230,26 @@ uninstall_icarius() {
   echo 'Para reinstalar, ejecute nuevamente el instalador de esta edicion.'
 }
 
+export_migration() {
+  local destination="${3:-}"
+  [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
+  export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
+  local exporter="$install_root/bin/runtime/ops/prepared-migration-export.js"
+  [[ -f "$exporter" ]] || { echo 'La release instalada no incluye el exportador de migracion Ubuntu.' >&2; exit 1; }
+  if [[ -n "$destination" ]]; then
+    node "$exporter" --root "$install_root" --destination "$destination"
+  else
+    node "$exporter" --root "$install_root"
+  fi
+  echo
+  echo 'Copie fuera del servidor los tres archivos generados.'
+  echo 'El paquete y la passphrase deben conservarse separados hasta el momento de importar.'
+}
+
 case "$command_name" in
   ssh-host) ssh_host ;;
   setup-web) setup_web ;;
   uninstall) uninstall_icarius "$@" ;;
-  *) echo 'Uso: icarius ssh-host | icarius setup-web | icarius uninstall --dry-run|--confirm' >&2; exit 1 ;;
+  export-migration) export_migration "$@" ;;
+  *) echo 'Uso: icarius ssh-host | icarius setup-web | icarius export-migration [directorio] | icarius uninstall --dry-run|--confirm' >&2; exit 1 ;;
 esac
