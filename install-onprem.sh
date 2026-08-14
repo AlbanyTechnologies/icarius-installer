@@ -73,7 +73,12 @@ version_at_least() {
 capacity_report() {
   local cpu="$1" memory_kib="$2" disk_kib="$3" inodes="$4" systemd="$5" cgroups="$6" virtualization="$7"
   local blocked=0
-  if (( cpu < 4 )); then printf 'BLOQUEADO - CPU: %s vCPU; se requieren 4.\n' "$cpu"; blocked=1; fi
+  if (( cpu < 2 )); then
+    printf 'BLOQUEADO - CPU: %s vCPU; se requieren al menos 2.\n' "$cpu"
+    blocked=1
+  elif (( cpu < 4 )); then
+    printf 'ADVERTENCIA - CPU: %s vCPU; compatible para instalaciones pequenas o validacion. Se recomiendan 4 o mas para produccion.\n' "$cpu"
+  fi
   if (( memory_kib < 7864320 )); then printf 'BLOQUEADO - Memoria: se requieren 8 GiB nominales.\n'; blocked=1; fi
   if (( disk_kib < 20971520 )); then printf 'BLOQUEADO - Disco: se requieren 20 GiB libres.\n'; blocked=1; fi
   if (( inodes < 100000 )); then printf 'BLOQUEADO - Disco: no hay inodos suficientes.\n'; blocked=1; fi
