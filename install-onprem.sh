@@ -61,6 +61,110 @@ ask_secret() {
   printf '\n' >/dev/tty
   printf '%s' "$answer"
 }
+confirm() {
+  local prompt="$1" answer
+  read -r -p "$prompt [s/N]: " answer </dev/tty
+  [[ "$answer" == s || "$answer" == S || "$answer" == si || "$answer" == SI ]]
+}
+version_at_least() {
+  local current="${1#v}" minimum="${2#v}"
+  [[ "$(printf '%s\n%s\n' "$minimum" "$current" | sort -V | head -n 1)" == "$minimum" ]]
+}
+capacity_report() {
+  local cpu="$1" memory_kib="$2" disk_kib="$3" inodes="$4" systemd="$5" cgroups="$6" virtualization="$7"
+  local blocked=0
+  if (( cpu < 4 )); then printf 'BLOQUEADO - CPU: %s vCPU; se requieren 4.\n' "$cpu"; blocked=1; fi
+  if (( memory_kib < 7864320 )); then printf 'BLOQUEADO - Memoria: se requieren 8 GiB nominales.\n'; blocked=1; fi
+  if (( disk_kib < 20971520 )); then printf 'BLOQUEADO - Disco: se requieren 20 GiB libres.\n'; blocked=1; fi
+  if (( inodes < 100000 )); then printf 'BLOQUEADO - Disco: no hay inodos suficientes.\n'; blocked=1; fi
+  if [[ "$systemd" != yes ]]; then printf 'BLOQUEADO - El host debe usar systemd.\n'; blocked=1; fi
+  if [[ "$cgroups" != yes ]]; then printf 'BLOQUEADO - El host no expone cgroups compatibles.\n'; blocked=1; fi
+  case "$virtualization" in
+    none|kvm|vmware|microsoft|xen|qemu|oracle|amazon) ;;
+    *) printf 'BLOQUEADO - Virtualizacion no validada para Docker: %s.\n' "$virtualization"; blocked=1 ;;
+  esac
+  (( blocked == 0 )) || return 1
+  printf 'APTO - Capacidad base compatible con ICARIUS.\n'
+}
+host_capacity_preflight() {
+  local cpu memory_kib memory_available_kib swap_kib disk_kib disk_total_kib inodes systemd cgroups virtualization ntp
+  cpu="$(nproc)"
+  memory_kib="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+  memory_available_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+  swap_kib="$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)"
+  disk_kib="$(df -Pk / | awk 'NR == 2 {print $4}')"
+  disk_total_kib="$(df -Pk / | awk 'NR == 2 {print $2}')"
+  inodes="$(df -Pi / | awk 'NR == 2 {print $4}')"
+  [[ "$(cat /proc/1/comm 2>/dev/null)" == systemd ]] && systemd=yes || systemd=no
+  [[ -r /proc/self/cgroup && -d /sys/fs/cgroup ]] && cgroups=yes || cgroups=no
+  virtualization="$(systemd-detect-virt 2>/dev/null || true)"
+  virtualization="${virtualization:-none}"
+  capacity_report "$cpu" "$memory_kib" "$disk_kib" "$inodes" "$systemd" "$cgroups" "$virtualization" || fail 'El servidor no cumple los requisitos minimos. Corrija los puntos BLOQUEADO y vuelva a ejecutar.'
+  (( disk_total_kib >= 83886080 )) || printf 'ADVERTENCIA - Se recomiendan 80 GiB de disco total para imagenes, backups y actualizaciones.\n'
+  (( memory_available_kib >= 4194304 )) || printf 'ADVERTENCIA - Hay menos de 4 GiB de memoria disponible; revise otros servicios del VPS.\n'
+  (( swap_kib > 0 )) || printf 'ADVERTENCIA - El VPS no tiene swap configurada.\n'
+  ntp="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+  [[ "$ntp" == yes ]] || printf 'ADVERTENCIA - El reloj no informa sincronizacion NTP.\n'
+}
+check_outbound() {
+  local label="$1" url="$2"
+  curl -sSIL --connect-timeout 10 --max-time 20 "$url" >/dev/null || fail "Sin conectividad saliente hacia $label ($url). Revise DNS, firewall o proxy."
+  printf 'APTO - Salida a %s.\n' "$label"
+}
+configure_docker_repository() {
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu %s stable\n' \
+    "$(dpkg --print-architecture)" "$VERSION_CODENAME" > /etc/apt/sources.list.d/docker.list
+  apt-get update -qq || fail 'No se pudo actualizar el indice del repositorio oficial de Docker.'
+}
+install_official_docker() {
+  configure_docker_repository
+  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+}
+ensure_docker_runtime() {
+  local docker_version compose_version existing_containers official_install=false
+  if ! command -v docker >/dev/null 2>&1; then
+    say 'Docker no esta instalado; se instalara Docker Engine oficial y Compose v2.'
+    install_official_docker
+  fi
+  systemctl enable --now docker.service containerd.service >/dev/null || fail 'Docker no pudo iniciarse con systemd.'
+  docker info >/dev/null 2>&1 || fail 'Docker esta instalado pero el daemon no responde. Corrija Docker antes de continuar.'
+  docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null)"
+  [[ -n "$docker_version" ]] || fail 'No se pudo determinar la version del servidor Docker.'
+  dpkg-query -W -f='${Status}' docker-ce 2>/dev/null | grep -q 'ok installed' && official_install=true
+  existing_containers="$(docker ps -aq | wc -l | tr -d ' ')"
+  if ! version_at_least "$docker_version" '24.0.0'; then
+    (( existing_containers == 0 )) || fail "Docker $docker_version es antiguo y existen $existing_containers contenedores. Programe una ventana de mantenimiento; el instalador no reiniciara servicios ajenos."
+    [[ "$official_install" == true ]] || fail "Docker $docker_version no proviene del repositorio oficial. Actualicelo manualmente a 24.0.0 o superior."
+    confirm "Docker $docker_version debe actualizarse. Continuar ahora" || fail 'Actualizacion de Docker cancelada.'
+    configure_docker_repository
+    apt-get install -y -qq --only-upgrade docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+    systemctl restart docker.service containerd.service >/dev/null
+  fi
+  compose_version="$(docker compose version --short 2>/dev/null || true)"
+  if [[ -z "$compose_version" ]] || ! version_at_least "$compose_version" '2.20.0'; then
+    (( existing_containers == 0 )) || fail "Docker Compose ${compose_version:-ausente} no es compatible y existen servicios activos. Actualice el plugin en una ventana de mantenimiento."
+    [[ "$official_install" == true ]] || fail 'Docker Compose v2.20.0 o superior es obligatorio.'
+    configure_docker_repository
+    apt-get install -y -qq --only-upgrade docker-compose-plugin >/dev/null
+  fi
+  temporary="${temporary:-$(mktemp -d)}"
+  printf 'services:\n  smoke:\n    image: hello-world:latest\n' > "$temporary/compose-smoke.yaml"
+  docker compose -f "$temporary/compose-smoke.yaml" config -q || fail 'Docker Compose no pudo validar una configuracion minima.'
+  printf 'APTO - Docker %s y Compose %s; %s contenedor(es) existentes preservados.\n' "$docker_version" "$(docker compose version --short)" "$existing_containers"
+}
+if [[ "${1:-}" == '--evaluate-capacity' ]]; then
+  [[ $# -eq 8 ]] || fail 'Uso: --evaluate-capacity CPU MEM_KIB DISK_KIB INODOS SYSTEMD CGROUPS VIRTUALIZACION'
+  capacity_report "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+  exit $?
+fi
+if [[ "${1:-}" == '--version-at-least' ]]; then
+  [[ $# -eq 3 ]] || fail 'Uso: --version-at-least VERSION MINIMA'
+  version_at_least "$2" "$3"
+  exit $?
+fi
 managed_preparer_owns_port() {
   local requested_port="$1" container_id bindings
   command -v docker >/dev/null 2>&1 || return 1
@@ -168,6 +272,9 @@ fi
 [[ "${ID:-}" == ubuntu && ("${VERSION_ID:-}" == '22.04' || "${VERSION_ID:-}" == '24.04') ]] || fail 'Se requiere Ubuntu Server 22.04 o 24.04.'
 [[ "$(uname -m)" == x86_64 ]] || fail 'Se requiere arquitectura x86_64.'
 
+say '0/5 - Verificando requisitos del servidor'
+host_capacity_preflight
+
 say "Asistente de instalacion - $PRODUCT"
 printf '%s\n' 'Confirme el acceso al configurador. Los valores sugeridos se aceptan con Enter.'
 
@@ -195,25 +302,23 @@ done
 if [[ "$EDITION" == cloud && ! -s "$SECRETS_ROOT/cloud_url_key" ]]; then
   needs_provisioning=true
 fi
-if [[ "$needs_provisioning" == true ]]; then
-  provisioning_code="$(ask_secret "Credencial ICARIUS3 $PRODUCT")"
-  [[ -n "$provisioning_code" ]] || fail 'La credencial ICARIUS3 es obligatoria en la primera instalacion.'
-fi
 
 say '1/5 - Preparando el servidor'
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
+apt-get update -qq || fail 'No se pudo actualizar el indice de paquetes. Revise DNS, firewall o proxy.'
 apt-get install -y -qq ca-certificates curl gnupg iproute2 python3 xz-utils >/dev/null
-if ! command -v docker >/dev/null 2>&1; then
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-  chmod a+r /etc/apt/keyrings/docker.asc
-  printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu %s stable\n' \
-    "$(dpkg --print-architecture)" "$VERSION_CODENAME" > /etc/apt/sources.list.d/docker.list
-  apt-get update -qq
-  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+check_outbound 'GitHub' "https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-$EDITION.sh"
+check_outbound 'GHCR' 'https://ghcr.io/v2/'
+if [[ ! -x "$NODE_ROOT/bin/node" ]]; then
+  check_outbound 'Node.js' 'https://nodejs.org/dist/v16.14.0/SHASUMS256.txt'
 fi
-systemctl enable --now docker.service containerd.service >/dev/null
+if ! command -v docker >/dev/null 2>&1; then
+  check_outbound 'Docker' 'https://download.docker.com/linux/ubuntu/gpg'
+fi
+if [[ "$EDITION" == onprem ]]; then
+  check_outbound 'licencias ICARIUS' 'https://icarius.online/'
+fi
+ensure_docker_runtime
 id "$OPERATOR" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$OPERATOR"
 usermod -aG docker "$OPERATOR"
 install -d -m 0750 -o "$OPERATOR" -g "$OPERATOR" "$INSTALL_ROOT" "$PREPARER_ROOT"
@@ -249,6 +354,10 @@ EOF
 chmod 0755 "/usr/local/bin/$APP_COMMAND"
 
 say '3/5 - Guardando credenciales protegidas'
+if [[ "$needs_provisioning" == true ]]; then
+  provisioning_code="$(ask_secret "Credencial ICARIUS3 $PRODUCT")"
+  [[ -n "$provisioning_code" ]] || fail 'La credencial ICARIUS3 es obligatoria en la primera instalacion.'
+fi
 if [[ -n "$provisioning_code" ]]; then
   if [[ -z "$temporary" || ! -d "$temporary" ]]; then temporary="$(mktemp -d)"; fi
   decoded_keys="$temporary/$KEYS_NAME"
