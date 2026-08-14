@@ -3,6 +3,40 @@ set -Eeuo pipefail
 
 command_name="${1:-}"
 install_root="${2:-}"
+find_server_name_conflicts() {
+  local host="$1" own="$2"
+  shift 2
+  python3 - "$host" "$own" "$@" <<'PY'
+import pathlib, re, sys
+host = sys.argv[1].lower()
+own = pathlib.Path(sys.argv[2]).resolve(strict=False)
+seen = set()
+for root_name in sys.argv[3:]:
+    root = pathlib.Path(root_name)
+    candidates = root.rglob('*') if root.is_dir() else [root]
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=False)
+            if not candidate.is_file() or resolved == own or resolved in seen:
+                continue
+            seen.add(resolved)
+            text = candidate.read_text(encoding='utf-8', errors='ignore')
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.split('#', 1)[0].strip()
+            match = re.match(r'^server_name\s+(.+?);?$', line)
+            if match and host in [item.rstrip(';').lower() for item in match.group(1).split()]:
+                print(candidate)
+                break
+PY
+}
+
+if [[ "$command_name" == '--find-server-name-conflicts' ]]; then
+  [[ $# -ge 5 ]] || { echo 'Uso interno invalido.' >&2; exit 1; }
+  find_server_name_conflicts "$3" "$4" "${@:5}"
+  exit 0
+fi
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || { echo 'Ejecute con sudo.' >&2; exit 1; }
 [[ "$install_root" == /srv/icarius/* ]] || { echo 'Raiz ICARIUS invalida.' >&2; exit 1; }
 
@@ -70,13 +104,14 @@ ssh_host() {
 }
 
 setup_web() {
-  local public_origin tls_mode edge_port host email site_name available enabled temporary backup=''
+  local public_origin tls_mode edge_port host email site_name available enabled temporary backup_dir
+  local enabled_target='' conflicts='' port_listener='' dns_addresses=''
   public_origin="$(env_value ICARIUS_PUBLIC_ORIGIN)"
   tls_mode="$(env_value ICARIUS_TLS_MODE)"
   edge_port="$(env_value ICARIUS_EDGE_HOST_PORT)"
   [[ "$tls_mode" == proxy ]] || {
-    echo "Esta instalacion usa TLS $tls_mode. El asistente Nginx/Certbot se utiliza solamente con TLS externo."
-    exit 1
+    echo "Esta instalacion usa TLS $tls_mode. Nginx y Certbot no son necesarios y no se modificaron."
+    return 0
   }
   host="$(python3 - "$public_origin" <<'PY'
 import sys, urllib.parse
@@ -94,16 +129,27 @@ PY
     echo 'Puerto interno ICARIUS invalido.' >&2
     exit 1
   }
-  echo "DNS detectado: $host"
-  echo "ICARIUS local: http://127.0.0.1:$edge_port"
-  confirm 'Configurar o actualizar Nginx y Certbot con estos datos' || { echo 'No se guardo ningun cambio.'; exit 1; }
   curl -fsS --max-time 10 "http://127.0.0.1:$edge_port/health" >/dev/null || {
     echo 'ICARIUS no responde localmente. Ejecute primero el comando start y vuelva a intentar.' >&2
     exit 1
   }
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq nginx certbot python3-certbot-nginx >/dev/null
+  dns_addresses="$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u | paste -sd, -)"
+  [[ -n "$dns_addresses" ]] || { echo "El DNS $host no resuelve desde el VPS." >&2; exit 1; }
+  for port in 80 443; do
+    port_listener="$(ss -ltnp 2>/dev/null | awk -v port=":$port" '$4 ~ port "$" {print}')"
+    if [[ -n "$port_listener" && "$port_listener" != *nginx* ]]; then
+      echo "El puerto $port esta ocupado por otro servicio. No se modifico Nginx." >&2
+      echo "$port_listener" >&2
+      exit 1
+    fi
+  done
+  echo "DNS detectado: $host -> $dns_addresses"
+  echo "ICARIUS local: http://127.0.0.1:$edge_port"
+  echo 'TI debe permitir entrada TCP 80 y 443 hacia este VPS durante la emision y operacion HTTPS.'
+  confirm 'Configurar o actualizar Nginx y Certbot con estos datos' || { echo 'No se guardo ningun cambio.'; exit 1; }
+  email="$(ask 'Email para avisos de renovacion de certificado')"
+  [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || { echo 'Email invalido. No se guardo ningun cambio.' >&2; exit 1; }
+
   site_name="icarius-$(basename "$install_root")"
   available="/etc/nginx/sites-available/$site_name.conf"
   enabled="/etc/nginx/sites-enabled/$site_name.conf"
@@ -111,8 +157,37 @@ PY
     echo "Ya existe $available y no fue generado por ICARIUS. No se modifico." >&2
     exit 1
   fi
+  if [[ -e "$enabled" ]]; then
+    enabled_target="$(readlink -f "$enabled" 2>/dev/null || true)"
+    [[ "$enabled_target" == "$available" ]] || { echo "$enabled pertenece a otro sitio. No se modifico." >&2; exit 1; }
+  fi
+  conflicts="$(find_server_name_conflicts "$host" "$available" /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d)"
+  [[ -z "$conflicts" ]] || {
+    echo "El DNS $host ya esta declarado en otra configuracion Nginx:" >&2
+    echo "$conflicts" >&2
+    echo 'Retire el server_name duplicado en una ventana controlada y vuelva a ejecutar.' >&2
+    exit 1
+  }
+
+  if ! command -v nginx >/dev/null 2>&1 || ! command -v certbot >/dev/null 2>&1 || ! certbot plugins 2>/dev/null | grep -q nginx; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq || { echo 'No se pudo actualizar el indice de paquetes.' >&2; exit 1; }
+    apt-get install -y -qq nginx certbot python3-certbot-nginx >/dev/null
+  fi
+  systemctl enable --now nginx >/dev/null
+
   temporary="$(mktemp)"
-  trap 'rm -f "$temporary"' RETURN
+  backup_dir="$(mktemp -d)"
+  trap 'rm -f "$temporary"; rm -rf "$backup_dir"' RETURN
+  [[ -e "$available" ]] && cp -a "$available" "$backup_dir/available.conf"
+  rollback_web_config() {
+    rm -f "$enabled" "$available"
+    if [[ -f "$backup_dir/available.conf" ]]; then
+      install -m 0644 "$backup_dir/available.conf" "$available"
+      ln -sfn "$available" "$enabled"
+    fi
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+  }
   {
     echo '# Managed by ICARIUS'
     echo 'server {'
@@ -132,27 +207,35 @@ PY
     echo '    }'
     echo '}'
   } > "$temporary"
-  [[ -e "$available" ]] && { backup="$available.before-icarius"; cp -a "$available" "$backup"; }
   install -m 0644 "$temporary" "$available"
   ln -sfn "$available" "$enabled"
   if ! nginx -t; then
-    [[ -n "$backup" ]] && mv -f "$backup" "$available" || rm -f "$available" "$enabled"
+    rollback_web_config
     echo 'La configuracion Nginx no fue aplicada porque la validacion fallo.' >&2
     exit 1
   fi
-  rm -f "$backup"
-  systemctl enable --now nginx
   systemctl reload nginx
   command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active' && ufw allow 'Nginx Full' >/dev/null || true
-  email="$(ask 'Email para avisos de renovacion de certificado')"
-  [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || { echo 'Email invalido.' >&2; exit 1; }
-  certbot --nginx --redirect --non-interactive --agree-tos --keep-until-expiring --email "$email" -d "$host"
+  if ! curl -fsS --max-time 15 "http://$host/health" >/dev/null; then
+    rollback_web_config
+    echo "El DNS no alcanza este VPS por HTTP. TI debe habilitar TCP 80 para $host antes de Certbot." >&2
+    exit 1
+  fi
+  if ! certbot --nginx --redirect --non-interactive --agree-tos --keep-until-expiring --email "$email" -d "$host"; then
+    rollback_web_config
+    echo 'Certbot no pudo emitir o renovar el certificado; se restauro el sitio anterior.' >&2
+    exit 1
+  fi
   systemctl enable --now certbot.timer >/dev/null 2>&1 || true
-  curl -fsS --max-time 15 "https://$host/health" >/dev/null
+  if ! nginx -t || ! curl -fsS --max-time 15 "https://$host/health" >/dev/null; then
+    rollback_web_config
+    echo 'La publicacion HTTPS no paso health; se restauro el sitio anterior.' >&2
+    exit 1
+  fi
+  systemctl reload nginx
   echo "ICARIUS publicado correctamente en https://$host"
   echo 'La renovacion automatica de Certbot quedo habilitada.'
 }
-
 uninstall_icarius() {
   local mode="${3:---dry-run}" app_command preparer_command preparer_root preparer_project docker_config_root
   local site_name available enabled backup preparer_port=''
