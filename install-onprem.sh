@@ -66,6 +66,11 @@ confirm() {
   read -r -p "$prompt [s/N]: " answer </dev/tty
   [[ "$answer" == s || "$answer" == S || "$answer" == si || "$answer" == SI ]]
 }
+confirm_recommended() {
+  local prompt="$1" answer
+  read -r -p "$prompt [S/n]: " answer </dev/tty
+  [[ -z "$answer" || "$answer" == s || "$answer" == S || "$answer" == si || "$answer" == SI ]]
+}
 version_at_least() {
   local current="${1#v}" minimum="${2#v}"
   [[ "$(printf '%s\n%s\n' "$minimum" "$current" | sort -V | head -n 1)" == "$minimum" ]]
@@ -107,9 +112,50 @@ host_capacity_preflight() {
   capacity_report "$cpu" "$memory_kib" "$disk_kib" "$inodes" "$systemd" "$cgroups" "$virtualization" || fail 'El servidor no cumple los requisitos minimos. Corrija los puntos BLOQUEADO y vuelva a ejecutar.'
   (( disk_total_kib >= 83886080 )) || printf 'ADVERTENCIA - Se recomiendan 80 GiB de disco total para imagenes, backups y actualizaciones.\n'
   (( memory_available_kib >= 4194304 )) || printf 'ADVERTENCIA - Hay menos de 4 GiB de memoria disponible; revise otros servicios del VPS.\n'
-  (( swap_kib > 0 )) || printf 'ADVERTENCIA - El VPS no tiene swap configurada.\n'
+  (( swap_kib > 0 )) || printf 'ADVERTENCIA - El VPS no tiene swap configurada; el asistente puede crear una reserva segura.\n'
   ntp="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
   [[ "$ntp" == yes ]] || printf 'ADVERTENCIA - El reloj no informa sincronizacion NTP.\n'
+}
+offer_swap_reserve() {
+  local swap_kib disk_kib swapfile='/swapfile' created=false activated=false
+  swap_kib="$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)"
+  (( swap_kib == 0 )) || return 0
+  printf 'La swap ayuda a evitar que Linux detenga contenedores ante un pico de memoria; no reemplaza la RAM.\n'
+  if ! confirm_recommended 'Crear ahora una reserva persistente de 2 GiB'; then
+    printf 'ADVERTENCIA - Swap omitida por decision del instalador. Puede configurarse mas adelante.\n'
+    return 0
+  fi
+  disk_kib="$(df -Pk / | awk 'NR == 2 {print $4}')"
+  (( disk_kib >= 23068672 )) || fail 'Se necesitan al menos 22 GiB libres para crear 2 GiB de swap y conservar el minimo operativo.'
+  if [[ -e "$swapfile" ]]; then
+    [[ -f "$swapfile" ]] || fail "$swapfile existe pero no es un archivo regular. TI debe revisarlo."
+    chmod 0600 "$swapfile"
+    swapon "$swapfile" || fail "$swapfile existe pero no pudo activarse. TI debe revisar su formato."
+    activated=true
+  else
+    if ! fallocate -l 2G "$swapfile"; then
+      dd if=/dev/zero of="$swapfile" bs=1M count=2048 status=none
+    fi
+    chmod 0600 "$swapfile"
+    mkswap "$swapfile" >/dev/null
+    if ! swapon "$swapfile"; then
+      rm -f "$swapfile"
+      fail 'No se pudo activar la reserva swap; el archivo incompleto fue retirado.'
+    fi
+    created=true
+    activated=true
+  fi
+  if ! awk '$1 == "/swapfile" && $3 == "swap" { found = 1 } END { exit !found }' /etc/fstab; then
+    temporary="${temporary:-$(mktemp -d)}"
+    cp /etc/fstab "$temporary/fstab.before-swap"
+    if ! printf '/swapfile none swap sw 0 0\n' >> /etc/fstab; then
+      cp "$temporary/fstab.before-swap" /etc/fstab
+      [[ "$activated" == true ]] && swapoff "$swapfile" || true
+      [[ "$created" == true ]] && rm -f "$swapfile"
+      fail 'No se pudo registrar la swap para el proximo reinicio; el cambio fue revertido.'
+    fi
+  fi
+  printf 'APTO - Reserva swap de 2 GiB activa y persistente.\n'
 }
 check_outbound() {
   local label="$1" url="$2"
@@ -279,6 +325,7 @@ fi
 
 say '0/5 - Verificando requisitos del servidor'
 host_capacity_preflight
+offer_swap_reserve
 
 say "Asistente de instalacion - $PRODUCT"
 printf '%s\n' 'Confirme el acceso al configurador. Los valores sugeridos se aceptan con Enter.'
