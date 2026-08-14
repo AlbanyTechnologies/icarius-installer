@@ -153,8 +153,86 @@ PY
   echo 'La renovacion automatica de Certbot quedo habilitada.'
 }
 
+uninstall_icarius() {
+  local mode="${3:---dry-run}" app_command preparer_command preparer_root preparer_project docker_config_root
+  local site_name available enabled backup preparer_port=''
+  case "$install_root" in
+    /srv/icarius/onprem)
+      app_command='icarius'
+      preparer_command='icarius-preparer'
+      preparer_root='/srv/icarius/preparer-onprem'
+      preparer_project='icarius-preparer-onprem'
+      docker_config_root='/home/icarius/.docker'
+      ;;
+    /srv/icarius/cloud)
+      app_command='icarius-cloud'
+      preparer_command='icarius-preparer-cloud'
+      preparer_root='/srv/icarius/preparer-cloud'
+      preparer_project='icarius-preparer-cloud'
+      docker_config_root='/home/icarius/.docker-cloud'
+      ;;
+    *) echo 'Raiz ICARIUS no autorizada para desinstalacion.' >&2; exit 1 ;;
+  esac
+  [[ "$mode" == --dry-run || "$mode" == --confirm ]] || {
+    echo "Uso: $app_command uninstall --dry-run|--confirm" >&2
+    exit 1
+  }
+  [[ -x "$install_root/bin/icarius" ]] || {
+    echo 'La instalacion no tiene runtime activo. Los datos persistentes no fueron modificados.' >&2
+    exit 1
+  }
+  export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
+  export DOCKER_CONFIG="$docker_config_root"
+  if [[ "$mode" == --dry-run ]]; then
+    "$install_root/bin/icarius" uninstall --dry-run
+    echo
+    echo 'Tambien se retiraran el Preparer y los comandos globales de esta edicion.'
+    echo 'Se conservaran datos, configuracion, secretos, certificados, backups y auditoria.'
+    echo "Para aplicar: sudo $app_command uninstall --confirm"
+    return
+  fi
+
+  if [[ -f "$preparer_root/preparer.env" ]]; then
+    preparer_port="$(sed -n 's/^ICARIUS_PREPARER_HOST_PORT=//p' "$preparer_root/preparer.env" | tail -1)"
+  fi
+  if [[ -f "$preparer_root/compose.yaml" && -f "$preparer_root/preparer.env" ]]; then
+    docker compose --project-name "$preparer_project" --project-directory "$preparer_root" \
+      --env-file "$preparer_root/preparer.env" -f "$preparer_root/compose.yaml" down --remove-orphans --timeout 25
+  fi
+
+  "$install_root/bin/icarius" uninstall --confirm
+
+  site_name="icarius-$(basename "$install_root")"
+  available="/etc/nginx/sites-available/$site_name.conf"
+  enabled="/etc/nginx/sites-enabled/$site_name.conf"
+  if [[ -f "$available" ]] && grep -q '^# Managed by ICARIUS$' "$available"; then
+    backup="$(mktemp)"
+    cp -a "$available" "$backup"
+    rm -f "$enabled" "$available"
+    if command -v nginx >/dev/null 2>&1 && ! nginx -t; then
+      install -m 0644 "$backup" "$available"
+      ln -sfn "$available" "$enabled"
+      rm -f "$backup"
+      echo 'No se retiro el sitio Nginx porque la configuracion restante no es valida.' >&2
+      exit 1
+    fi
+    rm -f "$backup"
+    systemctl reload nginx >/dev/null 2>&1 || true
+  fi
+
+  rm -rf "$preparer_root"
+  rm -f "/usr/local/bin/$preparer_command" "/usr/local/bin/$app_command"
+  echo 'ICARIUS fue desinstalado sin borrar informacion persistente.'
+  echo "Datos conservados: $install_root/data"
+  echo "Configuracion conservada: $install_root/config"
+  echo "Secretos y certificados conservados bajo: $install_root"
+  [[ -n "$preparer_port" ]] && echo "El puerto temporal $preparer_port ya no es utilizado por el Preparer."
+  echo 'Para reinstalar, ejecute nuevamente el instalador de esta edicion.'
+}
+
 case "$command_name" in
   ssh-host) ssh_host ;;
   setup-web) setup_web ;;
-  *) echo 'Uso: icarius ssh-host | icarius setup-web' >&2; exit 1 ;;
+  uninstall) uninstall_icarius "$@" ;;
+  *) echo 'Uso: icarius ssh-host | icarius setup-web | icarius uninstall --dry-run|--confirm' >&2; exit 1 ;;
 esac

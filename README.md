@@ -20,4 +20,18 @@ edición: On-Premise nunca autoriza imágenes Central Cloud y viceversa.
 
 Este repositorio no contiene imágenes, claves, tokens ni código de la aplicación. Las imágenes privadas se descargan desde GHCR únicamente con credenciales autorizadas.
 
+## Desinstalacion segura
+
+El instalador incorpora una vista previa y una confirmacion separada:
+
+```bash
+sudo icarius uninstall --dry-run
+sudo icarius uninstall --confirm
+```
+
+Para Central Cloud se usa `icarius-cloud`. El flujo retira solamente servicios
+y componentes reemplazables; conserva datos de clientes, configuracion,
+secretos, certificados, backups y auditoria para una reinstalacion o migracion.
+Nunca ejecuta una limpieza Docker global ni elimina volumenes.
+
 Copyright Albany Technologies. Todos los derechos reservados.
