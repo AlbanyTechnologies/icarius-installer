@@ -32,10 +32,25 @@ for root_name in sys.argv[3:]:
 PY
 }
 
+legacy_site_compatible() {
+  local source="$1" host="$2" port="$3" proxy_count
+  [[ -f "$source" ]] || return 1
+  ! grep -q '^# Managed by ICARIUS$' "$source" || return 1
+  grep -Eiq "^[[:space:]]*server_name[[:space:]]+([^;[:space:]]+[[:space:]]+)*${host//./\\.}([[:space:]]+[^;[:space:]]+)*;[[:space:]]*$" "$source" || return 1
+  proxy_count="$(grep -Ec '^[[:space:]]*proxy_pass[[:space:]]+' "$source" || true)"
+  [[ "$proxy_count" -eq 1 ]] || return 1
+  grep -Eq "^[[:space:]]*proxy_pass[[:space:]]+http://127\\.0\\.0\\.1:${port}/?;[[:space:]]*$" "$source"
+}
+
 if [[ "$command_name" == '--find-server-name-conflicts' ]]; then
   [[ $# -ge 5 ]] || { echo 'Uso interno invalido.' >&2; exit 1; }
   find_server_name_conflicts "$3" "$4" "${@:5}"
   exit 0
+fi
+if [[ "$command_name" == '--legacy-site-compatible' ]]; then
+  [[ $# -eq 5 ]] || { echo 'Uso interno invalido.' >&2; exit 1; }
+  legacy_site_compatible "$3" "$4" "$5"
+  exit $?
 fi
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || { echo 'Ejecute con sudo.' >&2; exit 1; }
 [[ "$install_root" == /srv/icarius/* ]] || { echo 'Raiz ICARIUS invalida.' >&2; exit 1; }
@@ -106,6 +121,7 @@ ssh_host() {
 setup_web() {
   local public_origin tls_mode edge_port host email site_name available enabled temporary backup_dir
   local enabled_target='' conflicts='' port_listener='' dns_addresses=''
+  local legacy_available='' legacy_enabled='' legacy_backup_dir='' legacy_removed=0 conflict_count=0
   public_origin="$(env_value ICARIUS_PUBLIC_ORIGIN)"
   tls_mode="$(env_value ICARIUS_TLS_MODE)"
   edge_port="$(env_value ICARIUS_EDGE_HOST_PORT)"
@@ -153,21 +169,42 @@ PY
   site_name="icarius-$(basename "$install_root")"
   available="/etc/nginx/sites-available/$site_name.conf"
   enabled="/etc/nginx/sites-enabled/$site_name.conf"
-  if [[ -e "$available" ]] && ! grep -q '^# Managed by ICARIUS$' "$available"; then
-    echo "Ya existe $available y no fue generado por ICARIUS. No se modifico." >&2
-    exit 1
-  fi
   if [[ -e "$enabled" ]]; then
     enabled_target="$(readlink -f "$enabled" 2>/dev/null || true)"
     [[ "$enabled_target" == "$available" ]] || { echo "$enabled pertenece a otro sitio. No se modifico." >&2; exit 1; }
   fi
   conflicts="$(find_server_name_conflicts "$host" "$available" /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d)"
-  [[ -z "$conflicts" ]] || {
-    echo "El DNS $host ya esta declarado en otra configuracion Nginx:" >&2
-    echo "$conflicts" >&2
-    echo 'Retire el server_name duplicado en una ventana controlada y vuelva a ejecutar.' >&2
-    exit 1
-  }
+  if [[ -e "$available" ]] && ! grep -q '^# Managed by ICARIUS$' "$available"; then
+    conflicts="$(printf '%s\n%s\n' "$available" "$conflicts" | sed '/^$/d')"
+  fi
+  if [[ -n "$conflicts" ]]; then
+    conflict_count="$(printf '%s\n' "$conflicts" | sed '/^$/d' | wc -l)"
+    legacy_available="$(printf '%s\n' "$conflicts" | sed '/^$/d' | head -1)"
+    legacy_available="$(readlink -f "$legacy_available" 2>/dev/null || true)"
+    if [[ "$conflict_count" -ne 1 || "$legacy_available" != /etc/nginx/sites-available/* ]] ||
+       ! legacy_site_compatible "$legacy_available" "$host" "$edge_port"; then
+      echo "El DNS $host ya esta declarado en otra configuracion Nginx que no puede adoptarse automaticamente:" >&2
+      echo "$conflicts" >&2
+      echo 'No se modifico ningun sitio.' >&2
+      exit 1
+    fi
+    while IFS= read -r candidate; do
+      if [[ "$(readlink -f "$candidate" 2>/dev/null || true)" == "$legacy_available" ]]; then
+        [[ -z "$legacy_enabled" ]] || {
+          echo 'La configuracion anterior tiene mas de un enlace habilitado y no puede adoptarse automaticamente.' >&2
+          exit 1
+        }
+        legacy_enabled="$candidate"
+      fi
+    done < <(find /etc/nginx/sites-enabled -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -print)
+    [[ -n "$legacy_enabled" ]] || {
+      echo 'La configuracion anterior no tiene un unico sitio habilitado y no puede adoptarse automaticamente.' >&2
+      exit 1
+    }
+    echo "Se encontro una publicacion anterior compatible: $legacy_available"
+    echo 'Apunta al mismo ICARIUS local y se respaldara antes de reemplazarla.'
+    confirm 'Adoptar esta publicacion bajo administracion de ICARIUS' || { echo 'No se modifico ningun sitio.'; exit 1; }
+  fi
 
   if ! command -v nginx >/dev/null 2>&1 || ! command -v certbot >/dev/null 2>&1 || ! certbot plugins 2>/dev/null | grep -q nginx; then
     export DEBIAN_FRONTEND=noninteractive
@@ -179,12 +216,23 @@ PY
   temporary="$(mktemp)"
   backup_dir="$(mktemp -d)"
   trap 'rm -f "$temporary"; rm -rf "$backup_dir"' RETURN
-  [[ -e "$available" ]] && cp -a "$available" "$backup_dir/available.conf"
+  if [[ -n "$legacy_available" ]]; then
+    legacy_backup_dir="$install_root/backups/nginx-adoption-$(date -u +%Y%m%dT%H%M%SZ)"
+    install -d -m 0700 "$legacy_backup_dir"
+    cp -a "$legacy_available" "$legacy_backup_dir/site.conf"
+    printf 'source=%s\nenabled=%s\nhost=%s\n' "$legacy_available" "$legacy_enabled" "$host" > "$legacy_backup_dir/manifest.txt"
+  elif [[ -e "$available" ]]; then
+    cp -a "$available" "$backup_dir/available.conf"
+  fi
   rollback_web_config() {
     rm -f "$enabled" "$available"
     if [[ -f "$backup_dir/available.conf" ]]; then
       install -m 0644 "$backup_dir/available.conf" "$available"
       ln -sfn "$available" "$enabled"
+    fi
+    if [[ "$legacy_removed" -eq 1 ]]; then
+      install -m 0644 "$legacy_backup_dir/site.conf" "$legacy_available"
+      ln -sfn "$legacy_available" "$legacy_enabled"
     fi
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
   }
@@ -208,6 +256,12 @@ PY
     echo '}'
   } > "$temporary"
   install -m 0644 "$temporary" "$available"
+  if [[ -n "$legacy_available" ]]; then
+    legacy_removed=1
+    if [[ "$legacy_available" != "$available" ]]; then
+      rm -f "$legacy_enabled" "$legacy_available"
+    fi
+  fi
   ln -sfn "$available" "$enabled"
   if ! nginx -t; then
     rollback_web_config
@@ -235,6 +289,7 @@ PY
   systemctl reload nginx
   echo "ICARIUS publicado correctamente en https://$host"
   echo 'La renovacion automatica de Certbot quedo habilitada.'
+  [[ -n "$legacy_backup_dir" ]] && echo "Configuracion anterior respaldada en: $legacy_backup_dir"
 }
 uninstall_icarius() {
   local mode="${3:---dry-run}" app_command preparer_command preparer_root preparer_project docker_config_root
