@@ -112,7 +112,11 @@ host_capacity_preflight() {
   capacity_report "$cpu" "$memory_kib" "$disk_kib" "$inodes" "$systemd" "$cgroups" "$virtualization" || fail 'El servidor no cumple los requisitos minimos. Corrija los puntos BLOQUEADO y vuelva a ejecutar.'
   (( disk_total_kib >= 83886080 )) || printf 'ADVERTENCIA - Se recomiendan 80 GiB de disco total para imagenes, backups y actualizaciones.\n'
   (( memory_available_kib >= 4194304 )) || printf 'ADVERTENCIA - Hay menos de 4 GiB de memoria disponible; revise otros servicios del VPS.\n'
-  (( swap_kib > 0 )) || printf 'ADVERTENCIA - El VPS no tiene swap configurada; el asistente puede crear una reserva segura.\n'
+  if (( swap_kib > 0 )); then
+    awk -v kib="$swap_kib" 'BEGIN { printf "APTO - Swap activa: %.1f GiB.\\n", kib / 1048576 }'
+  else
+    printf 'ADVERTENCIA - El VPS no tiene swap configurada; el asistente puede crear una reserva segura.\n'
+  fi
   ntp="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
   [[ "$ntp" == yes ]] || printf 'ADVERTENCIA - El reloj no informa sincronizacion NTP.\n'
 }
