@@ -292,8 +292,10 @@ PY
   [[ -n "$legacy_backup_dir" ]] && echo "Configuracion anterior respaldada en: $legacy_backup_dir"
 }
 uninstall_icarius() {
-  local mode="${3:---dry-run}" app_command preparer_command preparer_root preparer_project docker_config_root
-  local site_name available enabled backup preparer_port=''
+  local mode="${3:-}" app_command preparer_command preparer_root preparer_project docker_config_root edition
+  local site_name available enabled backup preparer_port='' confirmation expected reclaimed_kib audit_file
+  local export_dir exporter importer gate export_output package passphrase checksum verification_workspace
+  local preview_json storage_root
   case "$install_root" in
     /srv/icarius/onprem)
       app_command='icarius'
@@ -301,6 +303,7 @@ uninstall_icarius() {
       preparer_root='/srv/icarius/preparer-onprem'
       preparer_project='icarius-preparer-onprem'
       docker_config_root='/home/icarius/.docker'
+      edition='on-premise'
       ;;
     /srv/icarius/cloud)
       app_command='icarius-cloud'
@@ -308,11 +311,12 @@ uninstall_icarius() {
       preparer_root='/srv/icarius/preparer-cloud'
       preparer_project='icarius-preparer-cloud'
       docker_config_root='/home/icarius/.docker-cloud'
+      edition='central-cloud'
       ;;
     *) echo 'Raiz ICARIUS no autorizada para desinstalacion.' >&2; exit 1 ;;
   esac
-  [[ "$mode" == --dry-run || "$mode" == --confirm ]] || {
-    echo "Uso: $app_command uninstall --dry-run|--confirm" >&2
+  [[ -z "$mode" || "$mode" == --dry-run || "$mode" == --confirm ]] || {
+    echo "Uso: sudo $app_command uninstall" >&2
     exit 1
   }
   [[ -x "$install_root/bin/icarius" ]] || {
@@ -321,13 +325,94 @@ uninstall_icarius() {
   }
   export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
   export DOCKER_CONFIG="$docker_config_root"
+  preview_json="$("$install_root/bin/icarius" uninstall --dry-run)"
+  storage_root="$(printf '%s' "$preview_json" | node -e 'let value="";process.stdin.on("data",chunk=>value+=chunk);process.stdin.on("end",()=>process.stdout.write(JSON.parse(value).storage.root));')"
+  if [[ -z "$mode" ]]; then
+    echo
+    echo "Desinstalacion guiada - $edition"
+    echo '1) Desinstalar la aplicacion y conservar toda la informacion persistente.'
+    echo '2) Crear una migracion cifrada verificada y eliminar completamente esta edicion.'
+    echo '3) Cancelar.'
+    read -r -p 'Seleccione una opcion [1-3]: ' mode
+    case "$mode" in
+      1) mode='partial' ;;
+      2) mode='complete' ;;
+      3|'') echo 'Desinstalacion cancelada.'; return ;;
+      *) echo 'Opcion invalida. No se modifico nada.' >&2; exit 1 ;;
+    esac
+  fi
   if [[ "$mode" == --dry-run ]]; then
-    "$install_root/bin/icarius" uninstall --dry-run
+    printf '%s\n' "$preview_json"
     echo
     echo 'Tambien se retiraran el Preparer y los comandos globales de esta edicion.'
     echo 'Se conservaran datos, configuracion, secretos, certificados, backups y auditoria.'
-    echo "Para aplicar: sudo $app_command uninstall --confirm"
     return
+  fi
+
+  if [[ "$mode" == --confirm ]]; then
+    mode='partial-internal'
+  elif [[ "$mode" == partial ]]; then
+    echo
+    echo 'Se eliminaran contenedores, releases, runtime, comando y sitio Nginx administrado de esta edicion.'
+    echo 'Se conservaran data, configuracion, secretos, certificados, backups y auditoria.'
+    read -r -p 'Escriba DESINSTALAR para continuar: ' confirmation
+    [[ "$confirmation" == DESINSTALAR ]] || { echo 'Desinstalacion cancelada.'; return; }
+  elif [[ "$mode" == complete ]]; then
+    export_dir="/srv/icarius-exports/$(basename "$install_root")"
+    echo
+    echo 'La desinstalacion completa crea y verifica una migracion cifrada antes de eliminar datos.'
+    echo "Carpeta externa sugerida: $export_dir"
+    read -r -p 'Carpeta de salida o Enter para usar la sugerida: ' confirmation
+    [[ -n "$confirmation" ]] && export_dir="$confirmation"
+    exporter="$install_root/bin/runtime/ops/prepared-migration-export.js"
+    importer="$install_root/bin/runtime/ops/legacy-migration-import.js"
+    gate="$install_root/bin/runtime/preparer/complete-uninstall-gate.js"
+    [[ -f "$exporter" && -f "$importer" && -f "$gate" ]] || {
+      echo 'La release activa no incluye exportacion y verificacion para desinstalacion completa.' >&2
+      exit 1
+    }
+    export_dir="$(node "$gate" paths "$install_root" "$storage_root" "$export_dir" | node -e 'let value="";process.stdin.on("data",chunk=>value+=chunk);process.stdin.on("end",()=>process.stdout.write(JSON.parse(value).destination));')" || {
+      echo 'La carpeta de salida no es segura. No se modifico la instalacion.' >&2
+      exit 1
+    }
+    install -d -m 0700 "$export_dir"
+    export_output="$(node "$exporter" --root "$install_root" --destination "$export_dir")" || {
+      echo 'No se pudo crear la migracion. No se modifico la instalacion.' >&2
+      exit 1
+    }
+    printf '%s\n' "$export_output"
+    package="$(printf '%s\n' "$export_output" | sed -n 's/^Paquete: //p' | tail -1)"
+    passphrase="$(printf '%s\n' "$export_output" | sed -n 's/^Passphrase separada: //p' | tail -1)"
+    checksum="$(printf '%s\n' "$export_output" | sed -n 's/^Integridad SHA-256: //p' | tail -1)"
+    [[ -f "$package" && -f "$passphrase" && -f "$checksum" ]] || {
+      echo 'La migracion no genero sus tres archivos obligatorios. No se modifico la instalacion.' >&2
+      exit 1
+    }
+    node "$gate" backup "$package" "$passphrase" "$checksum" >/dev/null || {
+      echo 'Los archivos de migracion no pasaron la verificacion. No se modifico la instalacion.' >&2
+      exit 1
+    }
+    verification_workspace="$(mktemp -d)"
+    if ! node "$importer" --source "$package" --passphrase-file "$passphrase" --workspace "$verification_workspace" --dry-run --edition "$edition" >/dev/null; then
+      rm -rf "$verification_workspace"
+      echo 'La migracion no pudo abrirse y verificarse. No se modifico la instalacion.' >&2
+      exit 1
+    fi
+    rm -rf "$verification_workspace"
+    echo 'Migracion cifrada, checksum y lectura de recuperacion: OK.'
+    echo "Paquete preservado fuera de ICARIUS: $package"
+    expected="ELIMINAR $edition"
+    read -r -p "Escriba exactamente '$expected' para borrar esta edicion: " confirmation
+    [[ "$confirmation" == "$expected" ]] || { echo 'Desinstalacion cancelada. La migracion queda conservada.'; return; }
+  fi
+
+  if [[ "$mode" == complete ]]; then
+    case "$storage_root/" in
+      "$install_root/"*) reclaimed_kib="$(du -sk "$install_root" "$preparer_root" 2>/dev/null | awk '{total += $1} END {print total + 0}')" ;;
+      *) reclaimed_kib="$(du -sk "$install_root" "$storage_root" "$preparer_root" 2>/dev/null | awk '{total += $1} END {print total + 0}')" ;;
+    esac
+  else
+    reclaimed_kib="$(du -sk "$install_root/compose" "$install_root/releases" "$install_root/bin" "$preparer_root" 2>/dev/null | awk '{total += $1} END {print total + 0}')"
   fi
 
   if [[ -f "$preparer_root/preparer.env" ]]; then
@@ -360,10 +445,29 @@ uninstall_icarius() {
 
   rm -rf "$preparer_root"
   rm -f "/usr/local/bin/$preparer_command" "/usr/local/bin/$app_command"
-  echo 'ICARIUS fue desinstalado sin borrar informacion persistente.'
-  echo "Datos conservados: $install_root/data"
-  echo "Configuracion conservada: $install_root/config"
-  echo "Secretos y certificados conservados bajo: $install_root"
+  if [[ "$mode" == complete ]]; then
+    rm -rf "$install_root"
+    case "$storage_root/" in "$install_root/"*) ;; *) rm -rf "$storage_root" ;; esac
+    audit_file="$export_dir/uninstall-complete-$(date -u +%Y%m%dT%H%M%SZ).log"
+    {
+      echo "edition=$edition"
+      echo "installation_root=$install_root"
+      echo "migration_package=$package"
+      echo "checksum_file=$checksum"
+      echo "completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "$audit_file"
+    chmod 0600 "$audit_file"
+    echo "ICARIUS $edition fue eliminado completamente."
+    echo "Migracion recuperable: $package"
+    echo "Passphrase separada: $passphrase"
+    echo "Auditoria: $audit_file"
+  else
+    echo 'ICARIUS fue desinstalado sin borrar informacion persistente.'
+    echo "Datos conservados: $install_root/data"
+    echo "Configuracion conservada: $install_root/config"
+    echo "Secretos y certificados conservados bajo: $install_root"
+  fi
+  echo "Espacio estimado liberado: $reclaimed_kib KiB"
   [[ -n "$preparer_port" ]] && echo "El puerto temporal $preparer_port ya no es utilizado por el Preparer."
   echo 'Para reinstalar, ejecute nuevamente el instalador de esta edicion.'
 }
@@ -384,10 +488,153 @@ export_migration() {
   echo 'El paquete y la passphrase deben conservarse separados hasta el momento de importar.'
 }
 
+export_client() {
+  [[ -x $install_root/bin/icarius ]] || { echo 'Primero complete el configurador ICARIUS.'; exit 1; }
+  export PATH=/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH
+  local exporter=$install_root/bin/runtime/ops/prepared-client-export.js
+  [[ -f $exporter ]] || { echo 'La release instalada no incluye el exportador individual de clientes.'; exit 1; }
+  if ! command -v zip; then
+    apt-get update -qq
+    apt-get install -y -qq zip
+  fi
+  echo 'Clientes disponibles:'
+  node $exporter --root $install_root --list
+  local code destination default_destination
+  read -r -p 'Codigo de cliente a exportar: ' code
+  default_destination=$install_root/backups/clients
+  echo Carpeta de salida sugerida: $default_destination
+  read -r -p 'Carpeta de salida o Enter para usar la sugerida: ' destination
+  if [[ -z $destination ]]; then destination=$default_destination; fi
+  node $exporter --root $install_root --code $code --destination $destination
+  echo
+  echo 'Suba este ZIP desde Clientes, Importar datos de un cliente.'
+}
+
+manage_version() {
+  local edition preparer_package secrets_root manager catalogs selected version application_version hrb_id current_application image uid_gid confirmation backup_reference confirmed_by
+  [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
+  manager="$install_root/bin/runtime/preparer/release-manager.js"
+  [[ -f "$manager" ]] || { echo 'Esta instalacion aun no incluye el gestor guiado de versiones.' >&2; exit 1; }
+  edition="$(python3 - "$install_root/config/installation-state.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding='utf-8'))['edition'])
+PY
+)"
+  case "$edition" in
+    on-premise) preparer_package='icarius-preparer-onprem'; secrets_root='/srv/icarius/preparer-secrets/onprem' ;;
+    central-cloud) preparer_package='icarius-preparer-cloud'; secrets_root='/srv/icarius/preparer-secrets/cloud' ;;
+    *) echo 'La edicion instalada no es valida.' >&2; exit 1 ;;
+  esac
+  [[ -s "$secrets_root/ghcr_read_token" ]] || { echo 'Falta la credencial protegida de descarga GHCR.' >&2; exit 1; }
+  catalogs="$(runuser -u icarius -- env PATH="$PATH" node "$manager" list --root "$install_root" --token-file "$secrets_root/ghcr_read_token" --limit 3)" || exit 1
+  [[ "$catalogs" != '[]' ]] || { echo 'No hay versiones autorizadas disponibles.' >&2; exit 1; }
+  current_application="$(python3 - "$install_root" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+try:
+    state = json.load(open(root / 'config/host-state.json', encoding='utf-8'))
+    release = json.load(open(root / 'releases' / state['current'] / 'manifest.json', encoding='utf-8'))
+    print(release.get('applicationVersion', release['version']))
+except Exception:
+    print('')
+PY
+)"
+  if [[ "$command_name" == update ]]; then
+    selected=1
+  else
+    echo 'Versiones autorizadas:'
+    python3 - "$catalogs" <<'PY'
+import json, sys
+for index, item in enumerate(json.loads(sys.argv[1]), 1):
+    state = ' (activa)' if item.get('current') else ''
+    print(f"  {index}) ICARIUS {item['applicationVersion']} - release {item['version']}{state}")
+PY
+    read -r -p 'Seleccione una version o Enter para cancelar: ' selected </dev/tty
+    [[ -n "$selected" ]] || { echo 'Cambio de version cancelado.'; return; }
+  fi
+  [[ "$selected" =~ ^[1-9][0-9]*$ ]] || { echo 'Seleccion invalida.' >&2; exit 1; }
+  readarray -t release_values < <(python3 - "$catalogs" "$selected" <<'PY'
+import json, sys
+items=json.loads(sys.argv[1]); index=int(sys.argv[2])-1
+if index < 0 or index >= len(items): raise SystemExit(2)
+item=items[index]
+print(item['version']); print(item['applicationVersion']); print(item['hrbId']); print('true' if item.get('current') else 'false')
+PY
+) || { echo 'La version seleccionada no existe.' >&2; exit 1; }
+  version="${release_values[0]}"
+  application_version="${release_values[1]}"
+  hrb_id="${release_values[2]}"
+  if [[ "${release_values[3]}" == true ]]; then
+    echo "ICARIUS $application_version - release $version ya esta activa."
+    return
+  fi
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Version autorizada invalida.' >&2; exit 1; }
+  if [[ -n "$current_application" && "$current_application" != "$application_version" ]]; then
+    echo "La version requiere $hrb_id aplicado y un backup verificable de la base."
+    read -r -p "Escriba exactamente '$hrb_id' para confirmar el HRB: " confirmation </dev/tty
+    [[ "$confirmation" == "$hrb_id" ]] || { echo 'Actualizacion cancelada; no se descargo ni preparo la nueva version.'; return; }
+    read -r -p 'Referencia del backup de base de datos: ' backup_reference </dev/tty
+    [[ -n "$backup_reference" ]] || { echo 'La referencia del backup es obligatoria.' >&2; exit 1; }
+    read -r -p 'Usuario o tecnico que confirma: ' confirmed_by </dev/tty
+    [[ -n "$confirmed_by" ]] || { echo 'El responsable de la confirmacion es obligatorio.' >&2; exit 1; }
+  fi
+  image="ghcr.io/maxglomba/$preparer_package:$version"
+  echo "Preparando ICARIUS $application_version - release $version"
+  docker pull "$image"
+  uid_gid="$(stat -c '%u:%g' "$install_root")"
+  docker run --rm --user "$uid_gid" \
+    -v "$install_root:/workspace" \
+    -v "$secrets_root:/run/secrets:ro" \
+    "$image" node docker/preparer/release-manager.js prepare \
+      --root /workspace --host-root "$install_root" --version "$version" >/dev/null
+  if [[ -n "$current_application" && "$current_application" != "$application_version" ]]; then
+    "$install_root/bin/icarius" start --hrb-confirmed "$hrb_id" --db-backup-reference "$backup_reference" --confirmed-by "$confirmed_by"
+  else
+    "$install_root/bin/icarius" start
+  fi
+}
+
+rollback_version() {
+  [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
+  local current_application previous_application current_hrb previous_hrb compatible
+  local -a rollback_values
+  readarray -t rollback_values < <(python3 - "$install_root" <<'PY'
+import json, pathlib, sys
+root=pathlib.Path(sys.argv[1]); state=json.load(open(root/'config/host-state.json', encoding='utf-8'))
+if not state.get('previous'): raise SystemExit(2)
+def manifest(release): return json.load(open(root/'releases'/release/'manifest.json', encoding='utf-8'))
+current=manifest(state['current']); previous=manifest(state['previous'])
+current_app=current.get('applicationVersion', current['version']); previous_app=previous.get('applicationVersion', previous['version'])
+current_hrb=current.get('databasePrerequisite', {}).get('hrbId', 'HRB-' + current_app)
+previous_hrb=previous.get('databasePrerequisite', {}).get('hrbId', 'HRB-' + previous_app)
+compatible=previous.get('databasePrerequisite', {}).get('compatibleHrbs', [previous_hrb])
+print(current_app); print(previous_app); print(current_hrb); print(previous_hrb); print('true' if current_hrb in compatible else 'false')
+PY
+) || true
+  [[ "${#rollback_values[@]}" -eq 5 ]] || { echo 'No hay una version anterior disponible.' >&2; exit 1; }
+  current_application="${rollback_values[0]}"
+  previous_application="${rollback_values[1]}"
+  current_hrb="${rollback_values[2]}"
+  previous_hrb="${rollback_values[3]}"
+  compatible="${rollback_values[4]}"
+  if [[ "$compatible" != true ]]; then
+    echo "Rollback bloqueado: ICARIUS $previous_application no declara compatibilidad con $current_hrb." >&2
+    echo "La release anterior requiere $previous_hrb." >&2
+    echo 'El codigo no se revierte automaticamente cuando la base puede ser incompatible.' >&2
+    exit 1
+  fi
+  echo "Se volvera a la release anterior de ICARIUS $previous_application."
+  confirm 'Continuar con rollback' || { echo 'Rollback cancelado.'; return; }
+  "$install_root/bin/icarius" rollback
+}
+
 case "$command_name" in
   ssh-host) ssh_host ;;
   setup-web) setup_web ;;
   uninstall) uninstall_icarius "$@" ;;
   export-migration) export_migration "$@" ;;
-  *) echo 'Uso: icarius ssh-host | icarius setup-web | icarius export-migration [directorio] | icarius uninstall --dry-run|--confirm' >&2; exit 1 ;;
+  export-client) export_client "$@" ;;
+  update|change-version) manage_version ;;
+  rollback) rollback_version ;;
+  *) echo 'Uso: icarius ssh-host | icarius setup-web | icarius update | icarius change-version | icarius rollback | icarius export-migration [directorio] | icarius export-client | icarius uninstall' >&2; exit 1 ;;
 esac

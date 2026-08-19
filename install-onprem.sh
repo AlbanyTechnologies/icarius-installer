@@ -362,7 +362,7 @@ fi
 say '1/5 - Preparando el servidor'
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq || fail 'No se pudo actualizar el indice de paquetes. Revise DNS, firewall o proxy.'
-apt-get install -y -qq ca-certificates curl gnupg iproute2 python3 xz-utils >/dev/null
+apt-get install -y -qq ca-certificates curl gnupg iproute2 python3 xz-utils zip >/dev/null
 check_outbound 'GitHub' "https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-$EDITION.sh"
 check_outbound 'GHCR' 'https://ghcr.io/v2/'
 if [[ ! -x "$NODE_ROOT/bin/node" ]]; then
@@ -401,7 +401,7 @@ cat > "/usr/local/bin/$APP_COMMAND" <<EOF
 set -e
 export DOCKER_CONFIG="$DOCKER_CONFIG_ROOT"
 export PATH="$NODE_ROOT/bin:\$PATH"
-if [[ "\${1:-}" == setup-web || "\${1:-}" == ssh-host || "\${1:-}" == export-migration || "\${1:-}" == uninstall ]]; then
+if [[ "\${1:-}" == setup-web || "\${1:-}" == ssh-host || "\${1:-}" == update || "\${1:-}" == change-version || "\${1:-}" == rollback || "\${1:-}" == export-migration || "\${1:-}" == export-client || "\${1:-}" == uninstall ]]; then
   exec "$HOST_ASSISTANT" "\${1:-}" "$INSTALL_ROOT" "\${2:-}"
 fi
 test -x "$INSTALL_ROOT/bin/icarius" || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
