@@ -511,22 +511,29 @@ export_client() {
 }
 
 manage_version() {
-  local edition preparer_package secrets_root manager catalogs selected version application_version hrb_id current_application image uid_gid confirmation backup_reference confirmed_by
+  local edition preparer_package preparer_root secrets_root catalogs selected version application_version hrb_id current_application image uid_gid confirmation backup_reference confirmed_by
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
-  manager="$install_root/bin/runtime/preparer/release-manager.js"
-  [[ -f "$manager" ]] || { echo 'Esta instalacion aun no incluye el gestor guiado de versiones.' >&2; exit 1; }
   edition="$(python3 - "$install_root/config/installation-state.json" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1], encoding='utf-8'))['edition'])
 PY
 )"
   case "$edition" in
-    on-premise) preparer_package='icarius-preparer-onprem'; secrets_root='/srv/icarius/preparer-secrets/onprem' ;;
-    central-cloud) preparer_package='icarius-preparer-cloud'; secrets_root='/srv/icarius/preparer-secrets/cloud' ;;
+    on-premise) preparer_package='icarius-preparer-onprem'; preparer_root='/srv/icarius/preparer-onprem'; secrets_root='/srv/icarius/preparer-secrets/onprem' ;;
+    central-cloud) preparer_package='icarius-preparer-cloud'; preparer_root='/srv/icarius/preparer-cloud'; secrets_root='/srv/icarius/preparer-secrets/cloud' ;;
     *) echo 'La edicion instalada no es valida.' >&2; exit 1 ;;
   esac
   [[ -s "$secrets_root/ghcr_read_token" ]] || { echo 'Falta la credencial protegida de descarga GHCR.' >&2; exit 1; }
-  catalogs="$(runuser -u icarius -- env PATH="$PATH" node "$manager" list --root "$install_root" --token-file "$secrets_root/ghcr_read_token" --limit 3)" || exit 1
+  [[ -s "$preparer_root/preparer.env" ]] || { echo 'Falta la configuracion del Preparador. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
+  image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$preparer_root/preparer.env" | tail -1)"
+  [[ "$image" =~ ^ghcr\.io/maxglomba/$preparer_package:[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
+  docker image inspect "$image" >/dev/null 2>&1 || { echo 'El Preparador actualizado no esta disponible localmente. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
+  uid_gid="$(stat -c '%u:%g' "$install_root")"
+  catalogs="$(docker run --rm --pull never --user "$uid_gid" \
+    -v "$install_root:/workspace" \
+    -v "$secrets_root:/run/secrets:ro" \
+    "$image" node docker/preparer/release-manager.js list \
+      --root /workspace --token-file /run/secrets/ghcr_read_token --limit 3)" || exit 1
   [[ "$catalogs" != '[]' ]] || { echo 'No hay versiones autorizadas disponibles.' >&2; exit 1; }
   current_application="$(python3 - "$install_root" <<'PY'
 import json, pathlib, sys
@@ -578,11 +585,8 @@ PY
     read -r -p 'Usuario o tecnico que confirma: ' confirmed_by </dev/tty
     [[ -n "$confirmed_by" ]] || { echo 'El responsable de la confirmacion es obligatorio.' >&2; exit 1; }
   fi
-  image="ghcr.io/maxglomba/$preparer_package:$version"
   echo "Preparando ICARIUS $application_version - release $version"
-  docker pull "$image"
-  uid_gid="$(stat -c '%u:%g' "$install_root")"
-  docker run --rm --user "$uid_gid" \
+  docker run --rm --pull never --user "$uid_gid" \
     -v "$install_root:/workspace" \
     -v "$secrets_root:/run/secrets:ro" \
     "$image" node docker/preparer/release-manager.js prepare \
