@@ -55,6 +55,21 @@ ask() {
   read -r -p "$prompt: " answer </dev/tty
   printf '%s' "${answer:-$default}"
 }
+preparer_defaults() {
+  local env_file="$1" fallback_host="$2" fallback_port="$3"
+  local stored_host='' stored_port=''
+  if [[ -r "$env_file" ]]; then
+    stored_host="$(sed -n 's/^ICARIUS_PREPARER_PUBLIC_HOST=//p' "$env_file" | tail -n 1)"
+    stored_port="$(sed -n 's/^ICARIUS_PREPARER_HOST_PORT=//p' "$env_file" | tail -n 1)"
+  fi
+  if [[ "$stored_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+    fallback_host="$stored_host"
+  fi
+  if [[ "$stored_port" =~ ^[0-9]+$ && "$stored_port" -ge 1 && "$stored_port" -le 65535 ]]; then
+    fallback_port="$stored_port"
+  fi
+  printf '%s\n%s\n' "$fallback_host" "$fallback_port"
+}
 ask_secret() {
   local prompt="$1" answer
   read -r -s -p "$prompt: " answer </dev/tty
@@ -320,6 +335,11 @@ if [[ "${1:-}" == '--help' ]]; then
   printf 'Uso: curl -fsSL https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-%s.sh | sudo bash\n' "$EDITION"
   exit 0
 fi
+if [[ "${1:-}" == '--preparer-defaults' ]]; then
+  [[ $# -eq 4 ]] || fail 'Uso: --preparer-defaults ENV HOST PUERTO'
+  preparer_defaults "$2" "$3" "$4"
+  exit 0
+fi
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || fail 'Ejecute el comando con sudo.'
 [[ -r /etc/os-release ]] || fail 'No se pudo identificar el sistema operativo.'
@@ -335,10 +355,11 @@ say "Asistente de instalacion - $PRODUCT"
 printf '%s\n' 'Confirme el acceso al configurador. Los valores sugeridos se aceptan con Enter.'
 
 public_guess="$(hostname -I 2>/dev/null | awk '{print $1}')"
-public_host="$(ask 'IP o DNS para abrir el configurador' "${public_guess:-localhost}")"
+mapfile -t previous_preparer < <(preparer_defaults "$PREPARER_ROOT/preparer.env" "${public_guess:-localhost}" "$PREPARER_PORT_DEFAULT")
+public_host="$(ask 'IP o DNS para abrir el configurador' "${previous_preparer[0]}")"
 [[ "$public_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || fail 'IP o DNS invalido. Use solo letras, numeros, puntos y guiones; no incluya protocolo, puerto ni ruta.'
 preparer_host="$public_host"
-preparer_port="$(ask 'Puerto temporal del configurador' "$PREPARER_PORT_DEFAULT")"
+preparer_port="$(ask 'Puerto temporal del configurador' "${previous_preparer[1]}")"
 [[ "$preparer_port" =~ ^[0-9]+$ && "$preparer_port" -ge 1 && "$preparer_port" -le 65535 ]] || fail 'Puerto invalido.'
 if ss -lntH 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$preparer_port$"; then
   if managed_preparer_owns_port "$preparer_port"; then

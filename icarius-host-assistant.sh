@@ -600,7 +600,7 @@ PY
 
 rollback_version() {
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
-  local current_application previous_application current_hrb previous_hrb compatible
+  local current_application previous_application current_release previous_release current_hrb previous_hrb compatible
   local -a rollback_values
   readarray -t rollback_values < <(python3 - "$install_root" <<'PY'
 import json, pathlib, sys
@@ -609,25 +609,31 @@ if not state.get('previous'): raise SystemExit(2)
 def manifest(release): return json.load(open(root/'releases'/release/'manifest.json', encoding='utf-8'))
 current=manifest(state['current']); previous=manifest(state['previous'])
 current_app=current.get('applicationVersion', current['version']); previous_app=previous.get('applicationVersion', previous['version'])
+current_release=current.get('version', state['current'].removeprefix('release-'))
+previous_release=previous.get('version', state['previous'].removeprefix('release-'))
 current_hrb=current.get('databasePrerequisite', {}).get('hrbId', 'HRB-' + current_app)
 previous_hrb=previous.get('databasePrerequisite', {}).get('hrbId', 'HRB-' + previous_app)
 compatible=previous.get('databasePrerequisite', {}).get('compatibleHrbs', [previous_hrb])
-print(current_app); print(previous_app); print(current_hrb); print(previous_hrb); print('true' if current_hrb in compatible else 'false')
+print(current_app); print(previous_app); print(current_release); print(previous_release); print(current_hrb); print(previous_hrb); print('true' if current_hrb in compatible else 'false')
 PY
 ) || true
-  [[ "${#rollback_values[@]}" -eq 5 ]] || { echo 'No hay una version anterior disponible.' >&2; exit 1; }
+  [[ "${#rollback_values[@]}" -eq 7 ]] || { echo 'No hay una version anterior disponible.' >&2; exit 1; }
   current_application="${rollback_values[0]}"
   previous_application="${rollback_values[1]}"
-  current_hrb="${rollback_values[2]}"
-  previous_hrb="${rollback_values[3]}"
-  compatible="${rollback_values[4]}"
+  current_release="${rollback_values[2]}"
+  previous_release="${rollback_values[3]}"
+  current_hrb="${rollback_values[4]}"
+  previous_hrb="${rollback_values[5]}"
+  compatible="${rollback_values[6]}"
   if [[ "$compatible" != true ]]; then
     echo "Rollback bloqueado: ICARIUS $previous_application no declara compatibilidad con $current_hrb." >&2
     echo "La release anterior requiere $previous_hrb." >&2
     echo 'El codigo no se revierte automaticamente cuando la base puede ser incompatible.' >&2
     exit 1
   fi
-  echo "Se volvera a la release anterior de ICARIUS $previous_application."
+  echo 'Rollback solicitado:'
+  echo "  Version actual:  ICARIUS $current_application - release $current_release"
+  echo "  Version destino: ICARIUS $previous_application - release $previous_release"
   confirm 'Continuar con rollback' || { echo 'Rollback cancelado.'; return; }
   "$install_root/bin/icarius" rollback
 }
