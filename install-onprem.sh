@@ -563,6 +563,11 @@ case "\${1:-status}" in
   stop) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env down ;;
   status) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env ps ;;
   logs) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env logs --tail 100 ;;
+  unlock-auth)
+    runuser -u "$OPERATOR" -- docker compose --env-file preparer.env restart preparer
+    echo 'Bloqueo temporal eliminado. El usuario y la contrasena fueron conservados.'
+    echo 'Las sesiones abiertas se cerraron; vuelva a iniciar sesion.'
+    ;;
   reset-auth)
     runuser -u "$OPERATOR" -- docker compose --env-file preparer.env stop preparer
     if ! runuser -u "$OPERATOR" -- docker compose --env-file preparer.env run --rm --no-deps preparer node docker/preparer/app/reset-auth.js --root /workspace; then
@@ -585,7 +590,7 @@ case "\${1:-status}" in
     [[ "\$activation" =~ ^[A-Za-z0-9_-]+\$ ]] || { echo 'El token de activacion almacenado no es valido.' >&2; exit 1; }
     printf 'https://%s:%s/#activation=%s\n' "\$public_host" "\$public_port" "\$activation"
     ;;
-  *) echo 'Uso: $PREPARER_COMMAND start|stop|status|logs|activation|reset-auth' >&2; exit 1 ;;
+  *) echo 'Uso: $PREPARER_COMMAND start|stop|status|logs|activation|unlock-auth|reset-auth' >&2; exit 1 ;;
 esac
 EOF
 chmod 0755 "/usr/local/bin/$PREPARER_COMMAND"
