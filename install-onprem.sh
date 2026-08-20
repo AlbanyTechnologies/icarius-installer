@@ -37,6 +37,7 @@ case $EDITION in
     ;;
   *) printf 'ERROR: Edicion de bootstrap invalida.\n' >&2; exit 1 ;;
 esac
+PREPARER_ACCESS_FILE="$INSTALL_ROOT/config/preparer-access.env"
 
 cleanup() {
   if [[ -n "${temporary:-}" && -d "$temporary" ]]; then
@@ -355,7 +356,11 @@ say "Asistente de instalacion - $PRODUCT"
 printf '%s\n' 'Confirme el acceso al configurador. Los valores sugeridos se aceptan con Enter.'
 
 public_guess="$(hostname -I 2>/dev/null | awk '{print $1}')"
-mapfile -t previous_preparer < <(preparer_defaults "$PREPARER_ROOT/preparer.env" "${public_guess:-localhost}" "$PREPARER_PORT_DEFAULT")
+preparer_defaults_file="$PREPARER_ROOT/preparer.env"
+if [[ ! -r "$preparer_defaults_file" ]]; then
+  preparer_defaults_file="$PREPARER_ACCESS_FILE"
+fi
+mapfile -t previous_preparer < <(preparer_defaults "$preparer_defaults_file" "${public_guess:-localhost}" "$PREPARER_PORT_DEFAULT")
 public_host="$(ask 'IP o DNS para abrir el configurador' "${previous_preparer[0]}")"
 [[ "$public_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || fail 'IP o DNS invalido. Use solo letras, numeros, puntos y guiones; no incluya protocolo, puerto ni ruta.'
 preparer_host="$public_host"
@@ -523,6 +528,13 @@ ICARIUS_PREPARER_SECRETS_ROOT=$SECRETS_ROOT
 ICARIUS_HOST_UID=$(id -u "$OPERATOR")
 ICARIUS_HOST_GID=$(id -g "$OPERATOR")
 EOF
+install -d -m 0750 -o "$OPERATOR" -g "$OPERATOR" "$INSTALL_ROOT/config"
+preparer_access_tmp="$(mktemp "$INSTALL_ROOT/config/.preparer-access.XXXXXX")"
+printf 'ICARIUS_PREPARER_PUBLIC_HOST=%s\nICARIUS_PREPARER_HOST_PORT=%s\n' \
+  "$public_host" "$preparer_port" > "$preparer_access_tmp"
+chown "$OPERATOR:$OPERATOR" "$preparer_access_tmp"
+chmod 0600 "$preparer_access_tmp"
+mv -f "$preparer_access_tmp" "$PREPARER_ACCESS_FILE"
 cat > "$PREPARER_ROOT/compose.yaml" <<'YAML'
 name: ${ICARIUS_PREPARER_PROJECT}
 services:
