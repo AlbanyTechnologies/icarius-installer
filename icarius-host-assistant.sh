@@ -292,7 +292,7 @@ PY
   [[ -n "$legacy_backup_dir" ]] && echo "Configuracion anterior respaldada en: $legacy_backup_dir"
 }
 uninstall_icarius() {
-  local mode="${3:-}" app_command preparer_command preparer_root preparer_project docker_config_root edition
+  local mode="${3:-}" app_command preparer_command preparer_root preparer_project docker_config_root secrets_root edition
   local site_name available enabled backup preparer_port='' confirmation expected reclaimed_kib audit_file
   local export_dir exporter importer gate export_output package passphrase checksum verification_workspace
   local preview_json storage_root runtime_cli runtime_workspace='' runtime_container='' image
@@ -304,6 +304,7 @@ uninstall_icarius() {
       preparer_root='/srv/icarius/preparer-onprem'
       preparer_project='icarius-preparer-onprem'
       docker_config_root='/home/icarius/.docker'
+      secrets_root='/srv/icarius/preparer-secrets/onprem'
       edition='on-premise'
       ;;
     /srv/icarius/cloud)
@@ -312,6 +313,7 @@ uninstall_icarius() {
       preparer_root='/srv/icarius/preparer-cloud'
       preparer_project='icarius-preparer-cloud'
       docker_config_root='/home/icarius/.docker-cloud'
+      secrets_root='/srv/icarius/preparer-secrets/cloud'
       edition='central-cloud'
       ;;
     *) echo 'Raiz ICARIUS no autorizada para desinstalacion.' >&2; exit 1 ;;
@@ -445,8 +447,8 @@ uninstall_icarius() {
 
   if [[ "$mode" == complete ]]; then
     case "$storage_root/" in
-      "$install_root/"*) reclaimed_kib="$(du -sk "$install_root" "$preparer_root" 2>/dev/null | awk '{total += $1} END {print total + 0}')" ;;
-      *) reclaimed_kib="$(du -sk "$install_root" "$storage_root" "$preparer_root" 2>/dev/null | awk '{total += $1} END {print total + 0}')" ;;
+      "$install_root/"*) reclaimed_kib="$(du -sk "$install_root" "$preparer_root" "$secrets_root" "$docker_config_root" 2>/dev/null | awk '{total += $1} END {print total + 0}')" ;;
+      *) reclaimed_kib="$(du -sk "$install_root" "$storage_root" "$preparer_root" "$secrets_root" "$docker_config_root" 2>/dev/null | awk '{total += $1} END {print total + 0}')" ;;
     esac
   else
     reclaimed_kib="$(du -sk "$install_root/compose" "$install_root/releases" "$install_root/bin" "$preparer_root" 2>/dev/null | awk '{total += $1} END {print total + 0}')"
@@ -497,12 +499,15 @@ uninstall_icarius() {
   if [[ "$mode" == complete ]]; then
     rm -rf "$install_root"
     case "$storage_root/" in "$install_root/"*) ;; *) rm -rf "$storage_root" ;; esac
+    rm -rf "$secrets_root" "$docker_config_root"
     audit_file="$export_dir/uninstall-complete-$(date -u +%Y%m%dT%H%M%SZ).log"
     {
       echo "edition=$edition"
       echo "installation_root=$install_root"
       echo "migration_package=$package"
       echo "checksum_file=$checksum"
+      echo "provisioning_secrets_removed=$secrets_root"
+      echo "registry_credentials_removed=$docker_config_root"
       echo "completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } > "$audit_file"
     chmod 0600 "$audit_file"
@@ -510,6 +515,7 @@ uninstall_icarius() {
     echo "Migracion recuperable: $package"
     echo "Passphrase separada: $passphrase"
     echo "Auditoria: $audit_file"
+    echo 'Las credenciales de aprovisionamiento y del registry de esta edicion tambien fueron eliminadas.'
   else
     echo 'ICARIUS fue desinstalado sin borrar informacion persistente.'
     echo "Datos conservados: $install_root/data"
