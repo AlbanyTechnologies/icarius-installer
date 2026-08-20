@@ -473,7 +473,7 @@ uninstall_icarius() {
 }
 
 export_migration() {
-  local destination="${3:-}" exporter edition preparer_package preparer_root image
+  local destination="${3:-}" exporter edition preparer_package preparer_root image uid gid uid_gid
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
   export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
   exporter="$install_root/bin/runtime/ops/prepared-migration-export.js"
@@ -514,7 +514,10 @@ PY
   image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$preparer_root/preparer.env" | tail -1)"
   [[ "$image" =~ ^ghcr\.io/maxglomba/$preparer_package:[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
   docker image inspect "$image" >/dev/null 2>&1 || { echo 'El Preparador actualizado no esta disponible localmente. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
-  install -d -o root -g root -m 0700 "$destination"
+  uid="$(stat -c '%u' "$install_root")"
+  gid="$(stat -c '%g' "$install_root")"
+  uid_gid="$uid:$gid"
+  install -d -o "$uid" -g "$gid" -m 0700 "$destination"
   echo 'La release activa es anterior al exportador Ubuntu; se usara el Preparer autorizado sin modificar la release.'
   docker run --rm --pull never \
     --network none \
@@ -522,7 +525,7 @@ PY
     --cap-drop ALL \
     --security-opt no-new-privileges:true \
     --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
-    --user 0:0 \
+    --user "$uid_gid" \
     -v "$install_root:/workspace:ro" \
     -v "$destination:/exports" \
     --entrypoint node \
