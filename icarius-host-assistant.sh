@@ -295,7 +295,7 @@ uninstall_icarius() {
   local mode="${3:-}" app_command preparer_command preparer_root preparer_project docker_config_root edition
   local site_name available enabled backup preparer_port='' confirmation expected reclaimed_kib audit_file
   local export_dir exporter importer gate export_output package passphrase checksum verification_workspace
-  local preview_json storage_root
+  local preview_json storage_root runtime_cli runtime_workspace='' runtime_container='' image
   case "$install_root" in
     /srv/icarius/onprem)
       app_command='icarius'
@@ -325,7 +325,37 @@ uninstall_icarius() {
   }
   export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
   export DOCKER_CONFIG="$docker_config_root"
-  preview_json="$("$install_root/bin/icarius" uninstall --dry-run)"
+  runtime_cli="$install_root/bin/runtime/preparer/host-cli.js"
+  if ! grep -Fq "command === 'uninstall'" "$runtime_cli" 2>/dev/null; then
+    [[ -s "$preparer_root/preparer.env" ]] || {
+      echo 'La release instalada es anterior al desinstalador seguro y falta la configuracion del Preparador.' >&2
+      echo 'Ejecute nuevamente el instalador de esta edicion.' >&2
+      exit 1
+    }
+    image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$preparer_root/preparer.env" | tail -1)"
+    case "$edition" in
+      on-premise) [[ "$image" =~ ^ghcr\.io/maxglomba/icarius-preparer-onprem:[0-9]+\.[0-9]+\.[0-9]+$ ]] ;;
+      central-cloud) [[ "$image" =~ ^ghcr\.io/maxglomba/icarius-preparer-cloud:[0-9]+\.[0-9]+\.[0-9]+$ ]] ;;
+    esac || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
+    docker image inspect "$image" >/dev/null 2>&1 || {
+      echo 'El Preparador actualizado no esta disponible localmente. Ejecute nuevamente el instalador de esta edicion.' >&2
+      exit 1
+    }
+    runtime_workspace="$(mktemp -d /opt/icarius/uninstall-runtime.XXXXXX)"
+    trap "rm -rf -- '$runtime_workspace'" EXIT
+    runtime_container="$(docker create "$image")"
+    if ! docker cp "$runtime_container:/opt/icarius/docker" "$runtime_workspace/"; then
+      docker rm -f "$runtime_container" >/dev/null 2>&1 || true
+      echo 'No se pudo preparar el desinstalador seguro compatible.' >&2
+      exit 1
+    fi
+    docker rm "$runtime_container" >/dev/null
+    runtime_container=''
+    runtime_cli="$runtime_workspace/docker/preparer/host-cli.js"
+    [[ -f "$runtime_cli" ]] || { echo 'La imagen autorizada no contiene el desinstalador seguro.' >&2; exit 1; }
+    echo 'La release activa es anterior al desinstalador seguro; se usara temporalmente el runtime del Preparer autorizado.'
+  fi
+  preview_json="$(node "$runtime_cli" uninstall --dry-run --root "$install_root")"
   storage_root="$(printf '%s' "$preview_json" | node -e 'let value="";process.stdin.on("data",chunk=>value+=chunk);process.stdin.on("end",()=>process.stdout.write(JSON.parse(value).storage.root));')"
   if [[ -z "$mode" ]]; then
     echo
@@ -364,9 +394,15 @@ uninstall_icarius() {
     echo "Carpeta externa sugerida: $export_dir"
     read -r -p 'Carpeta de salida o Enter para usar la sugerida: ' confirmation
     [[ -n "$confirmation" ]] && export_dir="$confirmation"
-    exporter="$install_root/bin/runtime/ops/prepared-migration-export.js"
-    importer="$install_root/bin/runtime/ops/legacy-migration-import.js"
-    gate="$install_root/bin/runtime/preparer/complete-uninstall-gate.js"
+    if [[ -n "$runtime_workspace" ]]; then
+      exporter="$runtime_workspace/docker/ops/prepared-migration-export.js"
+      importer="$runtime_workspace/docker/ops/legacy-migration-import.js"
+      gate="$runtime_workspace/docker/preparer/complete-uninstall-gate.js"
+    else
+      exporter="$install_root/bin/runtime/ops/prepared-migration-export.js"
+      importer="$install_root/bin/runtime/ops/legacy-migration-import.js"
+      gate="$install_root/bin/runtime/preparer/complete-uninstall-gate.js"
+    fi
     [[ -f "$exporter" && -f "$importer" && -f "$gate" ]] || {
       echo 'La release activa no incluye exportacion y verificacion para desinstalacion completa.' >&2
       exit 1
@@ -423,7 +459,7 @@ uninstall_icarius() {
       --env-file "$preparer_root/preparer.env" -f "$preparer_root/compose.yaml" down --remove-orphans --timeout 25
   fi
 
-  "$install_root/bin/icarius" uninstall --confirm
+  node "$runtime_cli" uninstall --confirm --root "$install_root"
 
   site_name="icarius-$(basename "$install_root")"
   available="/etc/nginx/sites-available/$site_name.conf"
