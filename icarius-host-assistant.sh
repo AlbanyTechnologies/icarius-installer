@@ -473,16 +473,61 @@ uninstall_icarius() {
 }
 
 export_migration() {
-  local destination="${3:-}"
+  local destination="${3:-}" exporter edition preparer_package preparer_root image
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
   export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
-  local exporter="$install_root/bin/runtime/ops/prepared-migration-export.js"
-  [[ -f "$exporter" ]] || { echo 'La release instalada no incluye el exportador de migracion Ubuntu.' >&2; exit 1; }
-  if [[ -n "$destination" ]]; then
-    node "$exporter" --root "$install_root" --destination "$destination"
-  else
-    node "$exporter" --root "$install_root"
+  exporter="$install_root/bin/runtime/ops/prepared-migration-export.js"
+  if [[ -f "$exporter" ]]; then
+    if [[ -n "$destination" ]]; then
+      node "$exporter" --root "$install_root" --destination "$destination"
+    else
+      node "$exporter" --root "$install_root"
+    fi
+    echo
+    echo 'Copie fuera del servidor los tres archivos generados.'
+    echo 'El paquete y la passphrase deben conservarse separados hasta el momento de importar.'
+    return
   fi
+
+  edition="$(python3 - "$install_root/config/installation-state.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding='utf-8'))['edition'])
+PY
+)"
+  case "$edition" in
+    on-premise)
+      preparer_package='icarius-preparer-onprem'
+      preparer_root='/srv/icarius/preparer-onprem'
+      destination="${destination:-/srv/icarius-migrations/onprem}"
+      ;;
+    central-cloud)
+      preparer_package='icarius-preparer-cloud'
+      preparer_root='/srv/icarius/preparer-cloud'
+      destination="${destination:-/srv/icarius-migrations/cloud}"
+      ;;
+    *) echo 'La edicion instalada no es valida.' >&2; exit 1 ;;
+  esac
+  [[ "$destination" == /* && "$destination" != / ]] || { echo 'El destino de migracion debe ser un directorio absoluto seguro.' >&2; exit 1; }
+  destination="$(realpath -m "$destination")"
+  [[ "$destination/" != "$install_root/"* ]] || { echo 'El destino de migracion debe estar fuera de la instalacion ICARIUS.' >&2; exit 1; }
+  [[ -s "$preparer_root/preparer.env" ]] || { echo 'Falta la configuracion del Preparador. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
+  image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$preparer_root/preparer.env" | tail -1)"
+  [[ "$image" =~ ^ghcr\.io/maxglomba/$preparer_package:[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
+  docker image inspect "$image" >/dev/null 2>&1 || { echo 'El Preparador actualizado no esta disponible localmente. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
+  install -d -o root -g root -m 0700 "$destination"
+  echo 'La release activa es anterior al exportador Ubuntu; se usara el Preparer autorizado sin modificar la release.'
+  docker run --rm --pull never \
+    --network none \
+    --read-only \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
+    --user 0:0 \
+    -v "$install_root:/workspace:ro" \
+    -v "$destination:/exports" \
+    --entrypoint node \
+    "$image" docker/ops/prepared-migration-export.js \
+      --root /workspace --destination /exports
   echo
   echo 'Copie fuera del servidor los tres archivos generados.'
   echo 'El paquete y la passphrase deben conservarse separados hasta el momento de importar.'
