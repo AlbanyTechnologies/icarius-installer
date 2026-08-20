@@ -296,6 +296,7 @@ uninstall_icarius() {
   local site_name available enabled backup preparer_port='' confirmation expected reclaimed_kib audit_file
   local export_dir exporter importer gate export_output package passphrase checksum verification_workspace
   local preview_json storage_root runtime_cli runtime_workspace='' runtime_container='' image
+  local installation_state_backup uninstall_output uninstall_status=0
   case "$install_root" in
     /srv/icarius/onprem)
       app_command='icarius'
@@ -459,7 +460,19 @@ uninstall_icarius() {
       --env-file "$preparer_root/preparer.env" -f "$preparer_root/compose.yaml" down --remove-orphans --timeout 25
   fi
 
-  node "$runtime_cli" uninstall --confirm --root "$install_root"
+  installation_state_backup="$(mktemp "$install_root/config/.installation-state.before-uninstall.XXXXXX")"
+  cp --preserve=mode,ownership,timestamps "$install_root/config/installation-state.json" "$installation_state_backup"
+  if uninstall_output="$(node "$runtime_cli" uninstall --confirm --root "$install_root")"; then
+    uninstall_status=0
+  else
+    uninstall_status=$?
+  fi
+  mv -f "$installation_state_backup" "$install_root/config/installation-state.json"
+  printf '%s\n' "$uninstall_output"
+  [[ "$uninstall_status" -eq 0 ]] || {
+    echo 'La desinstalacion fallo; installation-state.json fue restaurado.' >&2
+    exit "$uninstall_status"
+  }
 
   site_name="icarius-$(basename "$install_root")"
   available="/etc/nginx/sites-available/$site_name.conf"
