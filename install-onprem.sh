@@ -37,6 +37,7 @@ case $EDITION in
     ;;
   *) printf 'ERROR: Edicion de bootstrap invalida.\n' >&2; exit 1 ;;
 esac
+PREPARER_MIN_VERSION='0.0.86'
 PREPARER_ACCESS_FILE="$INSTALL_ROOT/config/preparer-access.env"
 
 cleanup() {
@@ -512,6 +513,17 @@ if not versions: raise SystemExit("No hay versiones autorizadas.")
 print(max(versions, key=lambda value: tuple(int(part) for part in value.split("."))))
 PY
 )"
+minimum_is_newer=$(python3 - $version $PREPARER_MIN_VERSION <<'PY'
+import sys
+current = tuple(int(part) for part in sys.argv[1].split('.'))
+minimum = tuple(int(part) for part in sys.argv[2].split('.'))
+print('yes' if current < minimum else 'no')
+PY
+)
+if [[ $minimum_is_newer == yes ]]; then
+  curl -fsSL -H @$authorization_header_file -H 'Accept: application/vnd.oci.image.index.v1+json' https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/manifests/$PREPARER_MIN_VERSION >/dev/null || fail La version minima segura $PREPARER_MIN_VERSION no esta disponible para esta credencial.
+  version=$PREPARER_MIN_VERSION
+fi
 unset read_token bearer tags
 image="ghcr.io/maxglomba/$PREPARER_PACKAGE:$version"
 [[ "$version" =~ ^[0-9]+(\.[0-9]+)+$ ]] || fail 'Version autorizada invalida.'
