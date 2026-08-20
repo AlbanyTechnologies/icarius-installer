@@ -129,7 +129,7 @@ host_capacity_preflight() {
   (( disk_total_kib >= 83886080 )) || printf 'ADVERTENCIA - Se recomiendan 80 GiB de disco total para imagenes, backups y actualizaciones.\n'
   (( memory_available_kib >= 4194304 )) || printf 'ADVERTENCIA - Hay menos de 4 GiB de memoria disponible; revise otros servicios del VPS.\n'
   if (( swap_kib > 0 )); then
-    awk -v kib="$swap_kib" 'BEGIN { printf "APTO - Swap activa: %.1f GiB.\\n", kib / 1048576 }'
+    awk -v kib="$swap_kib" 'BEGIN { printf "APTO - Swap activa: %.1f GiB.\n", kib / 1048576 }'
   else
     printf 'ADVERTENCIA - El VPS no tiene swap configurada; el asistente puede crear una reserva segura.\n'
   fi
