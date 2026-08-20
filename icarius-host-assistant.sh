@@ -472,20 +472,58 @@ uninstall_icarius() {
   echo 'Para reinstalar, ejecute nuevamente el instalador de esta edicion.'
 }
 
+print_migration_download_instructions() {
+  local export_output="$1" package passphrase checksum preparer_root public_host ssh_user ssh_port download_folder
+  package="$(printf '%s\n' "$export_output" | sed -n 's/^Paquete: //p' | tail -1)"
+  passphrase="$(printf '%s\n' "$export_output" | sed -n 's/^Passphrase separada: //p' | tail -1)"
+  checksum="$(printf '%s\n' "$export_output" | sed -n 's/^Integridad SHA-256: //p' | tail -1)"
+  [[ -n "$package" && -n "$passphrase" && -n "$checksum" ]] || return
+  case "$install_root" in
+    /srv/icarius/onprem) preparer_root='/srv/icarius/preparer-onprem'; download_folder='ICARIUS-OnPremise' ;;
+    /srv/icarius/cloud) preparer_root='/srv/icarius/preparer-cloud'; download_folder='ICARIUS-Cloud' ;;
+    *) preparer_root=''; download_folder='ICARIUS-Migracion' ;;
+  esac
+  public_host="$(sed -n 's/^ICARIUS_PREPARER_PUBLIC_HOST=//p' "$preparer_root/preparer.env" 2>/dev/null | tail -1)"
+  public_host="${public_host:-$(hostname -f 2>/dev/null || hostname)}"
+  ssh_user="${SUDO_USER:-$(id -un)}"
+  ssh_port="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')"
+  ssh_port="${ssh_port:-22}"
+  echo
+  echo 'DESCARGA A SU PC'
+  echo 'Ejecute uno de estos bloques en su PC, no en el VPS.'
+  echo 'Si accede por otro usuario, DNS/IP o puerto SSH, reemplacelos en el comando.'
+  echo
+  echo 'PowerShell:'
+  printf 'New-Item -ItemType Directory -Force "$HOME\\Downloads\\%s"\n' "$download_folder"
+  printf 'scp -P %s %s@%s:"%s" %s@%s:"%s" %s@%s:"%s" "$HOME\\Downloads\\%s\\"\n' \
+    "$ssh_port" "$ssh_user" "$public_host" "$package" \
+    "$ssh_user" "$public_host" "$checksum" \
+    "$ssh_user" "$public_host" "$passphrase" "$download_folder"
+  echo
+  echo 'Bash:'
+  printf 'mkdir -p "$HOME/Downloads/%s"\n' "$download_folder"
+  printf 'scp -P %s %s@%s:"%s" %s@%s:"%s" %s@%s:"%s" "$HOME/Downloads/%s/"\n' \
+    "$ssh_port" "$ssh_user" "$public_host" "$package" \
+    "$ssh_user" "$public_host" "$checksum" \
+    "$ssh_user" "$public_host" "$passphrase" "$download_folder"
+  echo
+  echo 'Conserve el archivo .passphrase.txt separado del paquete despues de verificar la descarga.'
+}
+
 export_migration() {
-  local destination="${3:-}" exporter edition preparer_package preparer_root image uid gid uid_gid
+  local destination="${3:-}" exporter edition preparer_package preparer_root image uid gid uid_gid export_output
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
   export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
   exporter="$install_root/bin/runtime/ops/prepared-migration-export.js"
   if [[ -f "$exporter" ]]; then
     if [[ -n "$destination" ]]; then
-      node "$exporter" --root "$install_root" --destination "$destination"
+      export_output="$(node "$exporter" --root "$install_root" --destination "$destination")"
     else
-      node "$exporter" --root "$install_root"
+      export_output="$(node "$exporter" --root "$install_root")"
     fi
+    printf '%s\n' "$export_output"
     echo
-    echo 'Copie fuera del servidor los tres archivos generados.'
-    echo 'El paquete y la passphrase deben conservarse separados hasta el momento de importar.'
+    print_migration_download_instructions "$export_output"
     return
   fi
 
@@ -519,7 +557,7 @@ PY
   uid_gid="$uid:$gid"
   install -d -o "$uid" -g "$gid" -m 0700 "$destination"
   echo 'La release activa es anterior al exportador Ubuntu; se usara el Preparer autorizado sin modificar la release.'
-  docker run --rm --pull never \
+  export_output="$(docker run --rm --pull never \
     --network none \
     --read-only \
     --cap-drop ALL \
@@ -530,10 +568,11 @@ PY
     -v "$destination:/exports" \
     --entrypoint node \
     "$image" docker/ops/prepared-migration-export.js \
-      --root /workspace --destination /exports
+      --root /workspace --destination /exports)"
+  export_output="$(printf '%s\n' "$export_output" | sed "s#^Paquete: /exports/#Paquete: $destination/#; s#^Passphrase separada: /exports/#Passphrase separada: $destination/#; s#^Integridad SHA-256: /exports/#Integridad SHA-256: $destination/#")"
+  printf '%s\n' "$export_output"
   echo
-  echo 'Copie fuera del servidor los tres archivos generados.'
-  echo 'El paquete y la passphrase deben conservarse separados hasta el momento de importar.'
+  print_migration_download_instructions "$export_output"
 }
 
 export_client() {
