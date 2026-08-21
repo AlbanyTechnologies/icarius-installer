@@ -524,7 +524,14 @@ uninstall_icarius() {
   fi
   echo "Espacio estimado liberado: $reclaimed_kib KiB"
   [[ -n "$preparer_port" ]] && echo "El puerto temporal $preparer_port ya no es utilizado por el Preparer."
-  echo 'Para reinstalar, ejecute nuevamente el instalador de esta edicion.'
+  echo
+  echo 'REINSTALAR ESTA EDICION'
+  echo 'Copie y ejecute:'
+  if [[ "$edition" == central-cloud ]]; then
+    echo 'curl -fsSL https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-cloud.sh | sudo bash'
+  else
+    echo 'curl -fsSL https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-onprem.sh | sudo bash'
+  fi
 }
 
 print_migration_download_instructions() {
