@@ -37,7 +37,7 @@ case $EDITION in
     ;;
   *) printf 'ERROR: Edicion de bootstrap invalida.\n' >&2; exit 1 ;;
 esac
-PREPARER_MIN_VERSION='0.0.92'
+PREPARER_MIN_VERSION='0.0.93'
 PREPARER_ACCESS_FILE="$INSTALL_ROOT/config/preparer-access.env"
 
 cleanup() {
@@ -428,7 +428,7 @@ cat > "/usr/local/bin/$APP_COMMAND" <<EOF
 set -e
 export DOCKER_CONFIG="$DOCKER_CONFIG_ROOT"
 export PATH="$NODE_ROOT/bin:\$PATH"
-if [[ "\${1:-}" == setup-web || "\${1:-}" == ssh-host || "\${1:-}" == update || "\${1:-}" == change-version || "\${1:-}" == rollback || "\${1:-}" == export-migration || "\${1:-}" == export-client || "\${1:-}" == uninstall ]]; then
+if [[ "\${1:-}" == help || "\${1:-}" == -h || "\${1:-}" == --help || "\${1:-}" == update-preparer || "\${1:-}" == setup-web || "\${1:-}" == ssh-host || "\${1:-}" == update || "\${1:-}" == change-version || "\${1:-}" == rollback || "\${1:-}" == export-migration || "\${1:-}" == export-client || "\${1:-}" == uninstall ]]; then
   exec "$HOST_ASSISTANT" "\${1:-}" "$INSTALL_ROOT" "\${2:-}"
 fi
 test -x "$INSTALL_ROOT/bin/icarius" || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
@@ -583,6 +583,26 @@ set -e
 export DOCKER_CONFIG="$DOCKER_CONFIG_ROOT"
 cd "$PREPARER_ROOT"
 case "\${1:-status}" in
+  help|-h|--help)
+    cat <<HELP
+Preparador ICARIUS $PRODUCT
+
+Uso: sudo $PREPARER_COMMAND <comando>
+
+  help, -h, --help  Muestra esta ayuda.
+  start             Inicia el configurador visual.
+  stop              Cierra y retira el configurador; no detiene ICARIUS.
+  status            Muestra el estado del configurador.
+  logs              Muestra los ultimos 100 registros del configurador.
+  update            Actualiza y abre el configurador conservando su configuracion.
+  activation        Muestra el enlace inicial si aun no se creo el administrador.
+  unlock-auth       Quita un bloqueo temporal sin cambiar la contrasena.
+  reset-auth        Reinicia el acceso del administrador de forma guiada.
+
+Para administrar la aplicacion: sudo $APP_COMMAND help
+HELP
+    ;;
+  update) exec "$HOST_ASSISTANT" update-preparer "$INSTALL_ROOT" ;;
   start) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env up -d ;;
   stop) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env down ;;
   status) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env ps ;;
@@ -614,7 +634,7 @@ case "\${1:-status}" in
     [[ "\$activation" =~ ^[A-Za-z0-9_-]+\$ ]] || { echo 'El token de activacion almacenado no es valido.' >&2; exit 1; }
     printf 'https://%s:%s/#activation=%s\n' "\$public_host" "\$public_port" "\$activation"
     ;;
-  *) echo 'Uso: $PREPARER_COMMAND start|stop|status|logs|activation|unlock-auth|reset-auth' >&2; exit 1 ;;
+  *) echo 'Comando desconocido. Ejecute sudo $PREPARER_COMMAND help.' >&2; exit 1 ;;
 esac
 EOF
 chmod 0755 "/usr/local/bin/$PREPARER_COMMAND"

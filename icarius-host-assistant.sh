@@ -68,6 +68,79 @@ confirm() {
   [[ "$answer" == s || "$answer" == S ]]
 }
 
+command_context() {
+  case "$install_root" in
+    /srv/icarius/onprem)
+      app_command='icarius'
+      preparer_command='icarius-preparer'
+      installer_name='install-onprem.sh'
+      edition_label='On-Premise'
+      ;;
+    /srv/icarius/cloud)
+      app_command='icarius-cloud'
+      preparer_command='icarius-preparer-cloud'
+      installer_name='install-cloud.sh'
+      edition_label='Central Cloud'
+      ;;
+    *) echo 'Raiz ICARIUS no autorizada.' >&2; exit 1 ;;
+  esac
+}
+
+print_help() {
+  local app_command preparer_command installer_name edition_label
+  command_context
+  cat <<EOF
+ICARIUS $edition_label - comandos del VPS
+
+Uso: sudo $app_command <comando>
+
+Consulta y operacion diaria:
+  help, -h, --help               Muestra esta ayuda.
+  status [--json]                Estado y salud de todos los servicios.
+  logs [servicio] [--tail N]     Muestra logs; agregue --follow para verlos en vivo.
+  doctor                         Diagnostica configuracion, contenedores y conflictos.
+  start                          Inicia o reconcilia la instalacion preparada.
+  stop                           Detiene ICARIUS sin borrar datos.
+  validate                       Valida la configuracion sin iniciar servicios.
+  reconcile                      Retira contenedores incompatibles de esta instalacion.
+  cleanup --dry-run              Lista residuos seguros sin eliminarlos.
+  cleanup --confirm              Elimina residuos seguros de esta instalacion.
+
+Versiones:
+  update                         Instala la ultima version ICARIUS autorizada.
+  change-version                 Permite elegir una version autorizada.
+  rollback                       Vuelve a la version instalada anterior.
+  update-preparer                Actualiza y abre el configurador visual.
+
+Configuracion y respaldo:
+  setup-web                      Configura o verifica Nginx y Certbot para TLS externo.
+  ssh-host                       Genera y guarda la identidad conocida del tunel SSH.
+  export-client                  Exporta un cliente a ZIP.
+  export-migration [directorio]  Exporta toda la edicion a un paquete cifrado.
+  backup [directorio]            Crea un respaldo operativo.
+  restore <backup> --confirm     Restaura un respaldo operativo.
+  uninstall                      Abre la desinstalacion guiada y segura.
+
+Preparador visual:
+  sudo $preparer_command help
+
+Importante: update actualiza la aplicacion. update-preparer solo actualiza y abre
+el configurador; conserva host, puerto, administrador, secretos y datos existentes.
+EOF
+}
+
+update_preparer() {
+  local app_command preparer_command installer_name edition_label temporary installer_url
+  command_context
+  command -v curl >/dev/null 2>&1 || { echo 'Falta curl para actualizar el Preparador.' >&2; exit 1; }
+  temporary="$(mktemp)"
+  trap 'rm -f -- "$temporary"' RETURN
+  installer_url="https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/$installer_name?v=$(date +%s)"
+  echo "Actualizando el Preparador ICARIUS $edition_label..."
+  curl -fsSL --retry 3 "$installer_url" -o "$temporary"
+  bash "$temporary"
+}
+
 require_value() {
   [[ -n "$2" ]] || { echo "Falta $1." >&2; exit 1; }
 }
@@ -788,6 +861,8 @@ PY
 }
 
 case "$command_name" in
+  help|-h|--help) print_help ;;
+  update-preparer) update_preparer ;;
   ssh-host) ssh_host ;;
   setup-web) setup_web ;;
   uninstall) uninstall_icarius "$@" ;;
@@ -795,5 +870,5 @@ case "$command_name" in
   export-client) export_client "$@" ;;
   update|change-version) manage_version ;;
   rollback) rollback_version ;;
-  *) echo 'Uso: icarius ssh-host | icarius setup-web | icarius update | icarius change-version | icarius rollback | icarius export-migration [directorio] | icarius export-client | icarius uninstall' >&2; exit 1 ;;
+  *) echo 'Comando desconocido. Ejecute con help para ver las opciones disponibles.' >&2; exit 1 ;;
 esac
