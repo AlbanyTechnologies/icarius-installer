@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-OPERATOR='icarius'
 NODE_ROOT='/opt/icarius/node-v16.14.0-linux-x64'
 temporary=''
 
@@ -19,7 +18,7 @@ case $EDITION in
     KEYS_NAME='application_keys.json'
     APP_COMMAND='icarius'
     PREPARER_COMMAND='icarius-preparer'
-    DOCKER_CONFIG_ROOT='/home/icarius/.docker'
+    DOCKER_CONFIG_ROOT='/root/.docker'
     ;;
   cloud)
     PRODUCT='ICARIUS Central Cloud'
@@ -33,11 +32,11 @@ case $EDITION in
     KEYS_NAME='prod_keys.json'
     APP_COMMAND='icarius-cloud'
     PREPARER_COMMAND='icarius-preparer-cloud'
-    DOCKER_CONFIG_ROOT='/home/icarius/.docker-cloud'
+    DOCKER_CONFIG_ROOT='/root/.docker-cloud'
     ;;
   *) printf 'ERROR: Edicion de bootstrap invalida.\n' >&2; exit 1 ;;
 esac
-PREPARER_MIN_VERSION='0.0.98'
+PREPARER_MIN_VERSION='0.0.99'
 PREPARER_ACCESS_FILE="$INSTALL_ROOT/config/preparer-access.env"
 
 cleanup() {
@@ -402,11 +401,9 @@ if [[ "$EDITION" == onprem ]]; then
   check_outbound 'licencias ICARIUS' 'https://icarius.online/'
 fi
 ensure_docker_runtime
-id "$OPERATOR" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$OPERATOR"
-usermod -aG docker "$OPERATOR"
-install -d -m 0750 -o "$OPERATOR" -g "$OPERATOR" "$INSTALL_ROOT" "$PREPARER_ROOT"
-install -d -m 0700 -o "$OPERATOR" -g "$OPERATOR" "$SECRETS_ROOT"
-install -d -m 0700 -o "$OPERATOR" -g "$OPERATOR" "$DOCKER_CONFIG_ROOT"
+install -d -m 0750 -o root -g root "$INSTALL_ROOT" "$PREPARER_ROOT"
+install -d -m 0700 -o root -g root "$SECRETS_ROOT"
+install -d -m 0700 -o root -g root "$DOCKER_CONFIG_ROOT"
 
 say '2/5 - Instalando el comando ICARIUS'
 if [[ ! -x "$NODE_ROOT/bin/node" ]]; then
@@ -477,23 +474,23 @@ if [[ -n "$provisioning_code" ]]; then
     install -m 0600 "$decoded_cloud" "$SECRETS_ROOT/cloud_url_key"
   fi
 fi
-chown "$OPERATOR:$OPERATOR" "$SECRETS_ROOT"/*
+chown root:root "$SECRETS_ROOT"/*
 chmod 0600 "$SECRETS_ROOT"/*
-install -d -o 1000 -g 1000 -m 0700 "$INSTALL_ROOT/secrets"
-install -d -o 1000 -g 1000 -m 0750 "$INSTALL_ROOT/data/private/temp"
+install -d -o root -g root -m 0700 "$INSTALL_ROOT/secrets"
+install -d -o root -g root -m 0750 "$INSTALL_ROOT/data/private/temp"
 if [[ ! -s "$INSTALL_ROOT/secrets/$KEYS_NAME" ]]; then
-  install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/$KEYS_NAME" "$INSTALL_ROOT/secrets/$KEYS_NAME"
+  install -o root -g root -m 0600 "$SECRETS_ROOT/$KEYS_NAME" "$INSTALL_ROOT/secrets/$KEYS_NAME"
 fi
-install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/sendgrid_key" "$INSTALL_ROOT/secrets/sendgrid_key"
+install -o root -g root -m 0600 "$SECRETS_ROOT/sendgrid_key" "$INSTALL_ROOT/secrets/sendgrid_key"
 if [[ "$EDITION" == cloud && ! -s "$INSTALL_ROOT/secrets/cloud_url_key" ]]; then
-  install -o 1000 -g 1000 -m 0600 "$SECRETS_ROOT/cloud_url_key" "$INSTALL_ROOT/secrets/cloud_url_key"
+  install -o root -g root -m 0600 "$SECRETS_ROOT/cloud_url_key" "$INSTALL_ROOT/secrets/cloud_url_key"
 fi
 unset provisioning_code cloud_url_key registry_token
 
 if [[ -z "$temporary" || ! -d "$temporary" ]]; then
   temporary="$(mktemp -d)"
 fi
-cat "$SECRETS_ROOT/ghcr_read_token" | runuser -u "$OPERATOR" -- env HOME="/home/$OPERATOR" DOCKER_CONFIG="$DOCKER_CONFIG_ROOT" docker login ghcr.io -u "$REGISTRY_USER" --password-stdin >/dev/null
+cat "$SECRETS_ROOT/ghcr_read_token" | env HOME="/root" DOCKER_CONFIG="$DOCKER_CONFIG_ROOT" docker login ghcr.io -u "$REGISTRY_USER" --password-stdin >/dev/null
 
 say '4/5 - Buscando la version autorizada'
 read_token="$(cat "$SECRETS_ROOT/ghcr_read_token")"
@@ -541,14 +538,12 @@ ICARIUS_PREPARER_HOST_PORT=$preparer_port
 ICARIUS_PREPARER_PUBLIC_HOST=$public_host
 ICARIUS_INSTALLATION_ROOT=$INSTALL_ROOT
 ICARIUS_PREPARER_SECRETS_ROOT=$SECRETS_ROOT
-ICARIUS_HOST_UID=$(id -u "$OPERATOR")
-ICARIUS_HOST_GID=$(id -g "$OPERATOR")
 EOF
-install -d -m 0750 -o "$OPERATOR" -g "$OPERATOR" "$INSTALL_ROOT/config"
+install -d -m 0750 -o root -g root "$INSTALL_ROOT/config"
 preparer_access_tmp="$(mktemp "$INSTALL_ROOT/config/.preparer-access.XXXXXX")"
 printf 'ICARIUS_PREPARER_PUBLIC_HOST=%s\nICARIUS_PREPARER_HOST_PORT=%s\n' \
   "$public_host" "$preparer_port" > "$preparer_access_tmp"
-chown "$OPERATOR:$OPERATOR" "$preparer_access_tmp"
+chown root:root "$preparer_access_tmp"
 chmod 0600 "$preparer_access_tmp"
 mv -f "$preparer_access_tmp" "$PREPARER_ACCESS_FILE"
 cat > "$PREPARER_ROOT/compose.yaml" <<'YAML'
@@ -556,7 +551,7 @@ name: ${ICARIUS_PREPARER_PROJECT}
 services:
   preparer:
     image: ${ICARIUS_PREPARER_IMAGE}
-    user: "${ICARIUS_HOST_UID}:${ICARIUS_HOST_GID}"
+    user: "0:0"
     ports:
       - "${ICARIUS_PREPARER_BIND_ADDRESS}:${ICARIUS_PREPARER_HOST_PORT}:3210"
     environment:
@@ -576,9 +571,7 @@ services:
     cap_drop: [ALL]
     restart: unless-stopped
 YAML
-printf '\nICARIUS_HOST_UID=1000\nICARIUS_HOST_GID=1000\n' >> $PREPARER_ROOT/preparer.env
-chown -R 1000:1000 $INSTALL_ROOT $SECRETS_ROOT
-chown -R "$OPERATOR:$OPERATOR" "$PREPARER_ROOT"
+chown -R root:root "$INSTALL_ROOT" "$SECRETS_ROOT" "$PREPARER_ROOT"
 chmod 0600 "$PREPARER_ROOT/preparer.env"
 
 cat > "/usr/local/bin/$PREPARER_COMMAND" <<EOF
@@ -607,23 +600,23 @@ Para administrar la aplicacion: sudo $APP_COMMAND help
 HELP
     ;;
   update) exec "$HOST_ASSISTANT" update-preparer "$INSTALL_ROOT" ;;
-  start) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env up -d ;;
-  stop) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env down ;;
-  status) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env ps ;;
-  logs) exec runuser -u "$OPERATOR" -- docker compose --env-file preparer.env logs --tail 100 ;;
+  start) exec docker compose --env-file preparer.env up -d ;;
+  stop) exec docker compose --env-file preparer.env down ;;
+  status) exec docker compose --env-file preparer.env ps ;;
+  logs) exec docker compose --env-file preparer.env logs --tail 100 ;;
   unlock-auth)
-    runuser -u "$OPERATOR" -- docker compose --env-file preparer.env restart preparer
+    docker compose --env-file preparer.env restart preparer
     echo 'Bloqueo temporal eliminado. El usuario y la contrasena fueron conservados.'
     echo 'Las sesiones abiertas se cerraron; vuelva a iniciar sesion.'
     ;;
   reset-auth)
-    runuser -u "$OPERATOR" -- docker compose --env-file preparer.env stop preparer
-    if ! runuser -u "$OPERATOR" -- docker compose --env-file preparer.env run --rm --no-deps preparer node docker/preparer/app/reset-auth.js --root /workspace; then
-      runuser -u "$OPERATOR" -- docker compose --env-file preparer.env up -d preparer || true
+    docker compose --env-file preparer.env stop preparer
+    if ! docker compose --env-file preparer.env run --rm --no-deps preparer node docker/preparer/app/reset-auth.js --root /workspace; then
+      docker compose --env-file preparer.env up -d preparer || true
       echo 'No se pudo reiniciar el acceso. El configurador anterior volvio a iniciarse.' >&2
       exit 1
     fi
-    runuser -u "$OPERATOR" -- docker compose --env-file preparer.env up -d preparer
+    docker compose --env-file preparer.env up -d preparer
     echo 'Acceso reiniciado. Abra este enlace privado antes de 30 minutos:'
     exec "\$0" activation
     ;;
@@ -646,8 +639,8 @@ chmod 0755 "/usr/local/bin/$PREPARER_COMMAND"
 say '5/5 - Iniciando el configurador'
 (
   cd "$PREPARER_ROOT"
-  runuser -u "$OPERATOR" -- env DOCKER_CONFIG="$DOCKER_CONFIG_ROOT" docker compose --env-file preparer.env -f compose.yaml pull
-  runuser -u "$OPERATOR" -- env DOCKER_CONFIG="$DOCKER_CONFIG_ROOT" docker compose --env-file preparer.env -f compose.yaml up -d
+  env DOCKER_CONFIG="$DOCKER_CONFIG_ROOT" docker compose --env-file preparer.env -f compose.yaml pull
+  env DOCKER_CONFIG="$DOCKER_CONFIG_ROOT" docker compose --env-file preparer.env -f compose.yaml up -d
 )
 bootstrap_token_file="$INSTALL_ROOT/config/preparer-bootstrap-token.txt"
 preparer_auth_file="$INSTALL_ROOT/config/preparer-auth.json"

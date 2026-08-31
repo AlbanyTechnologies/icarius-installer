@@ -376,7 +376,7 @@ uninstall_icarius() {
       preparer_command='icarius-preparer'
       preparer_root='/srv/icarius/preparer-onprem'
       preparer_project='icarius-preparer-onprem'
-      docker_config_root='/home/icarius/.docker'
+      docker_config_root='/root/.docker'
       secrets_root='/srv/icarius/preparer-secrets/onprem'
       edition='on-premise'
       ;;
@@ -385,7 +385,7 @@ uninstall_icarius() {
       preparer_command='icarius-preparer-cloud'
       preparer_root='/srv/icarius/preparer-cloud'
       preparer_project='icarius-preparer-cloud'
-      docker_config_root='/home/icarius/.docker-cloud'
+      docker_config_root='/root/.docker-cloud'
       secrets_root='/srv/icarius/preparer-secrets/cloud'
       edition='central-cloud'
       ;;
@@ -646,7 +646,7 @@ print_migration_download_instructions() {
 }
 
 export_migration() {
-  local destination="${3:-}" exporter edition preparer_package preparer_root image uid gid uid_gid export_output
+  local destination="${3:-}" exporter edition preparer_package preparer_root image export_output
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
   export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
   exporter="$install_root/bin/runtime/ops/prepared-migration-export.js"
@@ -687,10 +687,7 @@ PY
   image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$preparer_root/preparer.env" | tail -1)"
   [[ "$image" =~ ^ghcr\.io/maxglomba/$preparer_package:[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
   docker image inspect "$image" >/dev/null 2>&1 || { echo 'El Preparador actualizado no esta disponible localmente. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
-  uid="$(stat -c '%u' "$install_root")"
-  gid="$(stat -c '%g' "$install_root")"
-  uid_gid="$uid:$gid"
-  install -d -o "$uid" -g "$gid" -m 0700 "$destination"
+  install -d -o root -g root -m 0700 "$destination"
   echo 'La release activa es anterior al exportador Ubuntu; se usara el Preparer autorizado sin modificar la release.'
   export_output="$(docker run --rm --pull never \
     --network none \
@@ -698,7 +695,7 @@ PY
     --cap-drop ALL \
     --security-opt no-new-privileges:true \
     --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
-    --user "$uid_gid" \
+    --user 0:0 \
     -v "$install_root:/workspace:ro" \
     -v "$destination:/exports" \
     --entrypoint node \
@@ -733,7 +730,7 @@ export_client() {
 }
 
 manage_version() {
-  local edition preparer_package preparer_root secrets_root catalogs selected version application_version addon_release sap9_addon sap10_addon installed_addon expected_addon warning_flag current_application image uid_gid
+  local edition preparer_package preparer_root secrets_root catalogs selected version application_version addon_release sap9_addon sap10_addon installed_addon expected_addon warning_flag current_application image
   local runtime_workspace runtime_container runtime_cli runtime_layout start_status
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
   edition="$(python3 - "$install_root/config/installation-state.json" <<'PY'
@@ -751,8 +748,7 @@ PY
   image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$preparer_root/preparer.env" | tail -1)"
   [[ "$image" =~ ^ghcr\.io/maxglomba/$preparer_package:[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
   docker image inspect "$image" >/dev/null 2>&1 || { echo 'El Preparador actualizado no esta disponible localmente. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
-  uid_gid="$(stat -c '%u:%g' "$install_root")"
-  catalogs="$(docker run --rm --pull never --user "$uid_gid" \
+  catalogs="$(docker run --rm --pull never --user 0:0 \
     -v "$install_root:/workspace" \
     -v "$secrets_root:/run/secrets:ro" \
     "$image" node docker/preparer/release-manager.js list \
@@ -823,7 +819,7 @@ PY
   fi
   echo 'ICARIUS creara y verificara un backup integral antes de aplicar la actualizacion.'
   echo "Preparando ICARIUS $application_version - release $version"
-  docker run --rm --pull never --user "$uid_gid" \
+  docker run --rm --pull never --user 0:0 \
     -v "$install_root:/workspace" \
     -v "$secrets_root:/run/secrets:ro" \
     "$image" node docker/preparer/release-manager.js prepare \
