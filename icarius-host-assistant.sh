@@ -734,6 +734,7 @@ export_client() {
 
 manage_version() {
   local edition preparer_package preparer_root secrets_root catalogs selected version application_version addon_release sap9_addon sap10_addon installed_addon expected_addon warning_flag current_application image uid_gid
+  local runtime_workspace runtime_container runtime_cli runtime_layout start_status
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
   edition="$(python3 - "$install_root/config/installation-state.json" <<'PY'
 import json, sys
@@ -827,11 +828,44 @@ PY
     -v "$secrets_root:/run/secrets:ro" \
     "$image" node docker/preparer/release-manager.js prepare \
       --root /workspace --host-root "$install_root" --version "$version" >/dev/null
-  if [[ -n "$warning_flag" ]]; then
-    "$install_root/bin/icarius" start --addon-version "$installed_addon" "$warning_flag"
-  else
-    "$install_root/bin/icarius" start --addon-version "$installed_addon"
+  runtime_workspace="$(mktemp -d /opt/icarius/update-runtime.XXXXXX)"
+  if ! runtime_container="$(docker create "$image")"; then
+    rm -rf -- "$runtime_workspace"
+    echo 'No se pudo crear el contenedor temporal del runtime autorizado.' >&2
+    exit 1
   fi
+  if ! docker cp "$runtime_container:/opt/icarius/docker" "$runtime_workspace/"; then
+    docker rm -f "$runtime_container" >/dev/null 2>&1 || true
+    rm -rf -- "$runtime_workspace"
+    echo 'No se pudo preparar el runtime autorizado para la actualizacion.' >&2
+    exit 1
+  fi
+  docker rm "$runtime_container" >/dev/null
+  runtime_cli="$runtime_workspace/docker/preparer/host-cli.js"
+  runtime_layout="$runtime_workspace/docker/preparer/layout.js"
+  [[ -f "$runtime_cli" && -f "$runtime_layout" ]] || {
+    rm -rf -- "$runtime_workspace"
+    echo 'La imagen autorizada no contiene el runtime completo de actualizacion.' >&2
+    exit 1
+  }
+  start_status=0
+  if [[ -n "$warning_flag" ]]; then
+    node "$runtime_cli" start --addon-version "$installed_addon" "$warning_flag" --root "$install_root" || start_status=$?
+  else
+    node "$runtime_cli" start --addon-version "$installed_addon" --root "$install_root" || start_status=$?
+  fi
+  if [[ "$start_status" -ne 0 ]]; then
+    rm -rf -- "$runtime_workspace"
+    return "$start_status"
+  fi
+  if ! node -e "require(process.argv[1]).installHostRuntime(process.argv[2])" "$runtime_layout" "$install_root"; then
+    rm -rf -- "$runtime_workspace"
+    echo 'La aplicacion se actualizo, pero no se pudo renovar el runtime de gestion.' >&2
+    echo 'Ejecute nuevamente el instalador de esta edicion antes del proximo comando.' >&2
+    exit 1
+  fi
+  rm -rf -- "$runtime_workspace"
+  echo 'Runtime de gestion actualizado.'
 }
 
 rollback_version() {
