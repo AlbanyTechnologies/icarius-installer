@@ -733,7 +733,7 @@ export_client() {
 }
 
 manage_version() {
-  local edition preparer_package preparer_root secrets_root catalogs selected version application_version hrb_id current_application image uid_gid confirmation backup_reference confirmed_by
+  local edition preparer_package preparer_root secrets_root catalogs selected version application_version addon_release sap9_addon sap10_addon installed_addon expected_addon warning_flag current_application image uid_gid
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
   edition="$(python3 - "$install_root/config/installation-state.json" <<'PY'
 import json, sys
@@ -786,43 +786,57 @@ PY
 import json, sys
 items=json.loads(sys.argv[1]); index=int(sys.argv[2])-1
 if index < 0 or index >= len(items): raise SystemExit(2)
-item=items[index]
-print(item['version']); print(item['applicationVersion']); print(item['hrbId']); print('true' if item.get('current') else 'false')
+item=items[index]; prerequisite=item.get('databasePrerequisite', {}); versions=prerequisite.get('addonVersions', {})
+print(item['version']); print(item['applicationVersion']); print(prerequisite.get('addonRelease', '')); print(versions.get('sap9', '')); print(versions.get('sap10', '')); print('true' if item.get('current') else 'false')
 PY
 ) || { echo 'La version seleccionada no existe.' >&2; exit 1; }
   version="${release_values[0]}"
   application_version="${release_values[1]}"
-  hrb_id="${release_values[2]}"
-  if [[ "${release_values[3]}" == true ]]; then
+  addon_release="${release_values[2]}"
+  sap9_addon="${release_values[3]}"
+  sap10_addon="${release_values[4]}"
+  if [[ "${release_values[5]}" == true ]]; then
     echo "ICARIUS $application_version - release $version ya esta activa."
     return
   fi
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Version autorizada invalida.' >&2; exit 1; }
-  if [[ -n "$current_application" && "$current_application" != "$application_version" ]]; then
-    echo "La version requiere $hrb_id aplicado y un backup verificable de la base."
-    read -r -p "Escriba exactamente '$hrb_id' para confirmar el HRB: " confirmation </dev/tty
-    [[ "$confirmation" == "$hrb_id" ]] || { echo 'Actualizacion cancelada; no se descargo ni preparo la nueva version.'; return; }
-    read -r -p 'Referencia del backup de base de datos: ' backup_reference </dev/tty
-    [[ -n "$backup_reference" ]] || { echo 'La referencia del backup es obligatoria.' >&2; exit 1; }
-    read -r -p 'Usuario o tecnico que confirma: ' confirmed_by </dev/tty
-    [[ -n "$confirmed_by" ]] || { echo 'El responsable de la confirmacion es obligatorio.' >&2; exit 1; }
+  [[ "$addon_release" =~ ^[0-9][0-9][0-9][0-9]$ && "$sap9_addon" == "9.00.$addon_release" && "$sap10_addon" == "10.00.$addon_release" ]] || { echo 'La version autorizada no declara correctamente el add-on requerido.' >&2; exit 1; }
+  echo 'Add-on requerido por esta version:'
+  echo "  SAP 9:  $sap9_addon"
+  echo "  SAP 10: $sap10_addon"
+  while true; do
+    read -r -p 'Version del add-on aplicada (9.00.XXXX o 10.00.XXXX): ' installed_addon </dev/tty
+    [[ "$installed_addon" =~ ^9\.00\.[0-9][0-9][0-9][0-9]$ || "$installed_addon" =~ ^10\.00\.[0-9][0-9][0-9][0-9]$ ]] && break
+    echo 'Formato invalido. Ejemplos: 9.00.0035 o 10.00.0035.' >&2
+  done
+  if [[ "$installed_addon" == 9.* ]]; then expected_addon="$sap9_addon"; else expected_addon="$sap10_addon"; fi
+  warning_flag=''
+  if [[ "$installed_addon" != "$expected_addon" ]]; then
+    echo
+    echo 'ADVERTENCIA: el add-on informado no coincide con el requerido.' >&2
+    echo "  Informado: $installed_addon" >&2
+    echo "  Requerido: $expected_addon" >&2
+    echo 'ICARIUS puede generar errores si continua sin aplicar el add-on correcto.' >&2
+    confirm 'Continuar igualmente bajo esta advertencia' || { echo 'Actualizacion cancelada. No se realizaron cambios.'; return; }
+    warning_flag='--accept-addon-warning'
   fi
+  echo 'ICARIUS creara y verificara un backup integral antes de aplicar la actualizacion.'
   echo "Preparando ICARIUS $application_version - release $version"
   docker run --rm --pull never --user "$uid_gid" \
     -v "$install_root:/workspace" \
     -v "$secrets_root:/run/secrets:ro" \
     "$image" node docker/preparer/release-manager.js prepare \
       --root /workspace --host-root "$install_root" --version "$version" >/dev/null
-  if [[ -n "$current_application" && "$current_application" != "$application_version" ]]; then
-    "$install_root/bin/icarius" start --hrb-confirmed "$hrb_id" --db-backup-reference "$backup_reference" --confirmed-by "$confirmed_by"
+  if [[ -n "$warning_flag" ]]; then
+    "$install_root/bin/icarius" start --addon-version "$installed_addon" "$warning_flag"
   else
-    "$install_root/bin/icarius" start
+    "$install_root/bin/icarius" start --addon-version "$installed_addon"
   fi
 }
 
 rollback_version() {
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
-  local current_application previous_application current_release previous_release current_hrb previous_hrb compatible
+  local current_application previous_application current_release previous_release current_addon previous_addon previous_sap9 previous_sap10
   local -a rollback_values
   readarray -t rollback_values < <(python3 - "$install_root" <<'PY'
 import json, pathlib, sys
@@ -833,25 +847,24 @@ current=manifest(state['current']); previous=manifest(state['previous'])
 current_app=current.get('applicationVersion', current['version']); previous_app=previous.get('applicationVersion', previous['version'])
 current_release=current.get('version', state['current'].removeprefix('release-'))
 previous_release=previous.get('version', state['previous'].removeprefix('release-'))
-current_hrb=current.get('databasePrerequisite', {}).get('hrbId', 'HRB-' + current_app)
-previous_hrb=previous.get('databasePrerequisite', {}).get('hrbId', 'HRB-' + previous_app)
-compatible=previous.get('databasePrerequisite', {}).get('compatibleHrbs', [previous_hrb])
-print(current_app); print(previous_app); print(current_release); print(previous_release); print(current_hrb); print(previous_hrb); print('true' if current_hrb in compatible else 'false')
+current_db=current.get('databasePrerequisite', {}); previous_db=previous.get('databasePrerequisite', {}); versions=previous_db.get('addonVersions', {})
+print(current_app); print(previous_app); print(current_release); print(previous_release); print(current_db.get('addonRelease', 'historico')); print(previous_db.get('addonRelease', 'historico')); print(versions.get('sap9', 'no declarado')); print(versions.get('sap10', 'no declarado'))
 PY
 ) || true
-  [[ "${#rollback_values[@]}" -eq 7 ]] || { echo 'No hay una version anterior disponible.' >&2; exit 1; }
+  [[ "${#rollback_values[@]}" -eq 8 ]] || { echo 'No hay una version anterior disponible.' >&2; exit 1; }
   current_application="${rollback_values[0]}"
   previous_application="${rollback_values[1]}"
   current_release="${rollback_values[2]}"
   previous_release="${rollback_values[3]}"
-  current_hrb="${rollback_values[4]}"
-  previous_hrb="${rollback_values[5]}"
-  compatible="${rollback_values[6]}"
-  if [[ "$compatible" != true ]]; then
-    echo "Rollback bloqueado: ICARIUS $previous_application no declara compatibilidad con $current_hrb." >&2
-    echo "La release anterior requiere $previous_hrb." >&2
-    echo 'El codigo no se revierte automaticamente cuando la base puede ser incompatible.' >&2
-    exit 1
+  current_addon="${rollback_values[4]}"
+  previous_addon="${rollback_values[5]}"
+  previous_sap9="${rollback_values[6]}"
+  previous_sap10="${rollback_values[7]}"
+  if [[ "$current_addon" != "$previous_addon" ]]; then
+    echo 'ADVERTENCIA: la version destino declara otro requisito de add-on.' >&2
+    echo "  SAP 9 destino:  $previous_sap9" >&2
+    echo "  SAP 10 destino: $previous_sap10" >&2
+    echo 'El rollback puede generar errores si la base no es compatible.' >&2
   fi
   echo 'Rollback solicitado:'
   echo "  Version actual:  ICARIUS $current_application - release $current_release"
