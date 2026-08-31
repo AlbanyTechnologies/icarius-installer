@@ -37,7 +37,7 @@ case $EDITION in
     ;;
   *) printf 'ERROR: Edicion de bootstrap invalida.\n' >&2; exit 1 ;;
 esac
-PREPARER_MIN_VERSION='0.0.95'
+PREPARER_MIN_VERSION='0.0.96'
 PREPARER_ACCESS_FILE="$INSTALL_ROOT/config/preparer-access.env"
 
 cleanup() {
