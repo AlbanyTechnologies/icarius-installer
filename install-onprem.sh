@@ -37,7 +37,7 @@ case $EDITION in
     ;;
   *) printf 'ERROR: Edicion de bootstrap invalida.\n' >&2; exit 1 ;;
 esac
-PREPARER_MIN_VERSION='0.0.93'
+PREPARER_MIN_VERSION='0.0.94'
 PREPARER_ACCESS_FILE="$INSTALL_ROOT/config/preparer-access.env"
 
 cleanup() {
@@ -504,7 +504,11 @@ bearer="$(curl -fsSL --netrc-file "$netrc_file" "https://ghcr.io/token?service=g
 authorization_header_file="$temporary/ghcr-authorization.header"
 printf 'Authorization: Bearer %s\n' "$bearer" > "$authorization_header_file"
 chmod 0600 "$authorization_header_file"
-tags="$(curl -fsSL -H @"$authorization_header_file" "https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/tags/list")"
+tags="$(curl -fsSL \
+  -H @"$authorization_header_file" \
+  -H 'Cache-Control: no-cache' \
+  -H 'Pragma: no-cache' \
+  "https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/tags/list?nocache=$(date +%s)")"
 version="$(TAGS_JSON="$tags" python3 - <<'PY'
 import json, os, re
 tags = json.loads(os.environ["TAGS_JSON"]).get("tags") or []
