@@ -91,6 +91,21 @@ version_at_least() {
   local current="${1#v}" minimum="${2#v}"
   [[ "$(printf '%s\n%s\n' "$minimum" "$current" | sort -V | head -n 1)" == "$minimum" ]]
 }
+latest_numeric_version() {
+  local pages_file="$1"
+  python3 - "$pages_file" <<'PY'
+import json, pathlib, re, sys
+versions = []
+for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if not line.strip():
+        continue
+    tags = json.loads(line).get("tags") or []
+    versions.extend(tag for tag in tags if re.fullmatch(r"\d+(?:\.\d+)+", tag))
+if not versions:
+    raise SystemExit("No hay versiones autorizadas.")
+print(max(set(versions), key=lambda value: tuple(int(part) for part in value.split("."))))
+PY
+}
 capacity_report() {
   local cpu="$1" memory_kib="$2" disk_kib="$3" inodes="$4" systemd="$5" cgroups="$6" virtualization="$7"
   local blocked=0
@@ -234,6 +249,11 @@ fi
 if [[ "${1:-}" == '--version-at-least' ]]; then
   [[ $# -eq 3 ]] || fail 'Uso: --version-at-least VERSION MINIMA'
   version_at_least "$2" "$3"
+  exit $?
+fi
+if [[ "${1:-}" == '--select-latest-tags' ]]; then
+  [[ $# -eq 2 && -r "$2" ]] || fail 'Uso: --select-latest-tags ARCHIVO_DE_PAGINAS'
+  latest_numeric_version "$2"
   exit $?
 fi
 managed_preparer_owns_port() {
@@ -501,19 +521,26 @@ bearer="$(curl -fsSL --netrc-file "$netrc_file" "https://ghcr.io/token?service=g
 authorization_header_file="$temporary/ghcr-authorization.header"
 printf 'Authorization: Bearer %s\n' "$bearer" > "$authorization_header_file"
 chmod 0600 "$authorization_header_file"
-tags="$(curl -fsSL \
-  -H @"$authorization_header_file" \
-  -H 'Cache-Control: no-cache' \
-  -H 'Pragma: no-cache' \
-  "https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/tags/list?nocache=$(date +%s)")"
-version="$(TAGS_JSON="$tags" python3 - <<'PY'
-import json, os, re
-tags = json.loads(os.environ["TAGS_JSON"]).get("tags") or []
-versions = [tag for tag in tags if re.fullmatch(r"\d+(?:\.\d+)+", tag)]
-if not versions: raise SystemExit("No hay versiones autorizadas.")
-print(max(versions, key=lambda value: tuple(int(part) for part in value.split("."))))
-PY
-)"
+tags_pages="$temporary/ghcr-tags-pages.jsonl"
+page_headers="$temporary/ghcr-tags.headers"
+page_body="$temporary/ghcr-tags.json"
+page_url="https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/tags/list?n=100&nocache=$(date +%s)"
+: > "$tags_pages"
+for _ in $(seq 1 1000); do
+  curl -fsSL -D "$page_headers" -o "$page_body" \
+    -H @"$authorization_header_file" \
+    -H 'Cache-Control: no-cache' \
+    -H 'Pragma: no-cache' \
+    "$page_url"
+  tr -d '\r\n' < "$page_body" >> "$tags_pages"
+  printf '\n' >> "$tags_pages"
+  next_page="$(sed -n 's/^[Ll]ink: <\([^>]*\)>; rel="next".*/\1/p' "$page_headers" | tr -d '\r' | tail -n 1)"
+  [[ -n "$next_page" ]] || break
+  [[ "$next_page" == /v2/maxglomba/"$PREPARER_PACKAGE"/tags/list* ]] || fail 'GHCR devolvio una pagina de tags invalida.'
+  page_url="https://ghcr.io$next_page"
+done
+[[ -z "${next_page:-}" ]] || fail 'GHCR devolvio demasiadas paginas de versiones.'
+version="$(latest_numeric_version "$tags_pages")"
 minimum_is_newer=$(python3 - $version $PREPARER_MIN_VERSION <<'PY'
 import sys
 current = tuple(int(part) for part in sys.argv[1].split('.'))
@@ -525,7 +552,7 @@ if [[ $minimum_is_newer == yes ]]; then
   curl -fsSL -H @$authorization_header_file -H 'Accept: application/vnd.oci.image.index.v1+json' https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/manifests/$PREPARER_MIN_VERSION >/dev/null || fail La version minima segura $PREPARER_MIN_VERSION no esta disponible para esta credencial.
   version=$PREPARER_MIN_VERSION
 fi
-unset read_token bearer tags
+unset read_token bearer tags_pages page_headers page_body page_url next_page
 image="ghcr.io/maxglomba/$PREPARER_PACKAGE:$version"
 [[ "$version" =~ ^[0-9]+(\.[0-9]+)+$ ]] || fail 'Version autorizada invalida.'
 [[ "$image" == "ghcr.io/maxglomba/$PREPARER_PACKAGE:"* ]] || fail 'Imagen autorizada invalida.'
