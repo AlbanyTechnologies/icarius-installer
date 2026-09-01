@@ -135,9 +135,10 @@ update_preparer() {
   command -v curl >/dev/null 2>&1 || { echo 'Falta curl para actualizar el Preparador.' >&2; exit 1; }
   temporary="$(mktemp)"
   trap 'rm -f -- "$temporary"' RETURN
-  installer_url="https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/$installer_name?v=$(date +%s)"
+  installer_url="https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/$installer_name?ref=main"
   echo "Actualizando el Preparador ICARIUS $edition_label..."
-  curl -fsSL --retry 3 "$installer_url" -o "$temporary"
+  curl -fsSL --retry 3 -H 'Accept: application/vnd.github.raw+json' "$installer_url" -o "$temporary"
+  bash -n "$temporary" || { echo 'El instalador descargado no es valido; no se modifico el Preparador.' >&2; exit 1; }
   bash "$temporary"
 }
 
@@ -648,9 +649,9 @@ uninstall_icarius() {
   echo 'REINSTALAR ESTA EDICION'
   echo 'Copie y ejecute:'
   if [[ "$edition" == central-cloud ]]; then
-    echo 'curl -fsSL https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-cloud.sh | sudo bash'
+    echo "curl -fsSL -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/install-cloud.sh?ref=main' | sudo bash"
   else
-    echo 'curl -fsSL https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-onprem.sh | sudo bash'
+    echo "curl -fsSL -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/install-onprem.sh?ref=main' | sudo bash"
   fi
 }
 
