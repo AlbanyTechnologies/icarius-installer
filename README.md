@@ -36,22 +36,20 @@ Preparer únicamente cuando soporte ICARIUS lo indique.
 
 ## Túnel SSH: identidad del servidor
 
-No busque, cree ni descargue un archivo `known_hosts`. Antes de validar en el
-Preparer, deje el configurador abierto y ejecute en otra conexión SSH:
+No busque, cree ni cargue un archivo `known_hosts`. Complete el DNS o IP y el
+puerto SSH en el Preparer y presione **Validar** o **Preparar instalación**.
 
-```bash
-sudo icarius ssh-host
-# Central Cloud:
-sudo icarius-cloud ssh-host
-```
+El Preparer consulta automáticamente la identidad del servidor y muestra sus
+huellas. Pida a TI que confirme una por otro medio y acepte solamente si es
+correcta. La identidad queda guardada y se reutiliza. Si cambia el servidor o su
+puerto, el Preparer obtiene una identidad nueva y vuelve a pedir confirmación.
 
-Ingrese el mismo DNS o IP y puerto SSH del formulario. Pida a TI que confirme
-una de las huellas mostradas y responda `s`. Vuelva al configurador y deje vacío
-**Identidad conocida del host**: el archivo ya quedó guardado y se reutiliza
-automáticamente. Repita el paso sólo si cambia el servidor o su puerto.
-## Desinstalacion segura
+Los comandos `sudo icarius ssh-host` y `sudo icarius-cloud ssh-host` quedan
+reservados para diagnóstico y deben usarse sólo si soporte ICARIUS lo indica.
 
-El instalador incorpora una vista previa y una confirmacion separada:
+## Desinstalación segura
+
+El instalador incorpora una vista previa y una confirmación separada:
 
 ```bash
 sudo icarius uninstall --dry-run
@@ -60,12 +58,12 @@ sudo icarius uninstall --confirm
 
 Para Central Cloud se usa `icarius-cloud`. El flujo retira solamente servicios
 y componentes reemplazables; conserva datos de clientes, configuracion,
-secretos, certificados, backups y auditoria para una reinstalacion o migracion.
+secretos, certificados, backups y auditoria para una reinstalación o migracion.
 Nunca ejecuta una limpieza Docker global ni elimina volumenes.
 
 ## Exportar una migracion
 
-Una instalacion Ubuntu puede generar el mismo paquete cifrado que el
+Una instalación Ubuntu puede generar el mismo paquete cifrado que el
 exportador Windows, sin detener servicios ni seleccionar carpetas a mano:
 
 ```bash
