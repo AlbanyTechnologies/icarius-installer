@@ -557,6 +557,7 @@ uninstall_icarius() {
     rm -rf "$verification_workspace"
     echo 'Migracion cifrada, checksum y lectura de recuperacion: OK.'
     echo "Paquete preservado fuera de ICARIUS: $package"
+    print_migration_download_instructions "$export_output"
     expected="ELIMINAR $edition"
     read -r -p "Escriba exactamente '$expected' para borrar esta edicion: " confirmation
     [[ "$confirmation" == "$expected" ]] || { echo 'Desinstalacion cancelada. La migracion queda conservada.'; return; }
@@ -666,13 +667,14 @@ print_migration_download_instructions() {
   esac
   public_host="$(sed -n 's/^ICARIUS_PREPARER_PUBLIC_HOST=//p' "$preparer_root/preparer.env" 2>/dev/null | tail -1)"
   public_host="${public_host:-$(hostname -f 2>/dev/null || hostname)}"
-  ssh_user="${SUDO_USER:-$(id -un)}"
+  ssh_user='root'
   ssh_port="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')"
   ssh_port="${ssh_port:-22}"
   echo
   echo 'DESCARGA A SU PC'
   echo 'Ejecute uno de estos bloques en su PC, no en el VPS.'
-  echo 'Si accede por otro usuario, DNS/IP o puerto SSH, reemplacelos en el comando.'
+  echo 'Se solicitara la contrasena de root del VPS.'
+  echo 'El VPS conserva solamente esta ultima migracion. Copiela antes de generar otra.'
   echo
   echo 'PowerShell:'
   printf 'New-Item -ItemType Directory -Force "$HOME\\Downloads\\%s"\n' "$download_folder"
@@ -689,6 +691,35 @@ print_migration_download_instructions() {
     "$ssh_user" "$public_host" "$passphrase" "$download_folder"
   echo
   echo 'Conserve el archivo .passphrase.txt separado del paquete despues de verificar la descarga.'
+}
+
+backup_icarius() {
+  local destination="${3:-}" result backup_path preparer_root public_host ssh_port download_folder
+  [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
+  export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
+  if [[ -n "$destination" ]]; then
+    result="$("$install_root/bin/icarius" backup "$destination" --json)"
+  else
+    result="$("$install_root/bin/icarius" backup --json)"
+  fi
+  backup_path="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["destination"])' <<<"$result")"
+  case "$install_root" in
+    /srv/icarius/onprem) preparer_root='/srv/icarius/preparer-onprem'; download_folder='ICARIUS-OnPremise-Backup' ;;
+    /srv/icarius/cloud) preparer_root='/srv/icarius/preparer-cloud'; download_folder='ICARIUS-Cloud-Backup' ;;
+    *) preparer_root=''; download_folder='ICARIUS-Backup' ;;
+  esac
+  public_host="$(sed -n 's/^ICARIUS_PREPARER_PUBLIC_HOST=//p' "$preparer_root/preparer.env" 2>/dev/null | tail -1)"
+  public_host="${public_host:-$(hostname -f 2>/dev/null || hostname)}"
+  ssh_port="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')"
+  ssh_port="${ssh_port:-22}"
+  echo 'Backup verificado correctamente.'
+  echo "Carpeta: $backup_path"
+  echo 'El VPS conserva solamente este ultimo backup. Copielo antes de generar otro.'
+  echo
+  echo 'DESCARGA A SU PC'
+  echo 'Ejecute en PowerShell desde su PC. Se solicitara la contrasena de root del VPS:'
+  printf 'New-Item -ItemType Directory -Force "$HOME\\Downloads\\%s"\n' "$download_folder"
+  printf 'scp -r -P %s root@%s:"%s" "$HOME\\Downloads\\%s\\"\n' "$ssh_port" "$public_host" "$backup_path" "$download_folder"
 }
 
 export_migration() {
@@ -957,6 +988,7 @@ case "$command_name" in
   setup-web) setup_web ;;
   uninstall) uninstall_icarius "$@" ;;
   export-migration) export_migration "$@" ;;
+  backup) backup_icarius "$@" ;;
   export-client) export_client "$@" ;;
   update|change-version) manage_version ;;
   rollback) rollback_version ;;
