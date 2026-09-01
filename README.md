@@ -20,6 +20,35 @@ edición: On-Premise nunca autoriza imágenes Central Cloud y viceversa.
 
 Este repositorio no contiene imágenes, claves, tokens ni código de la aplicación. Las imágenes privadas se descargan desde GHCR únicamente con credenciales autorizadas.
 
+## Actualizar
+
+Para el uso habitual sólo se actualiza la aplicación:
+
+```bash
+sudo icarius update
+# Central Cloud:
+sudo icarius-cloud update
+```
+
+El comando también puede repetirse si ya está instalada la última versión:
+verifica los servicios y recupera los que no estén activos. Actualice el
+Preparer únicamente cuando soporte ICARIUS lo indique.
+
+## Túnel SSH: identidad del servidor
+
+No busque, cree ni descargue un archivo `known_hosts`. Antes de validar en el
+Preparer, deje el configurador abierto y ejecute en otra conexión SSH:
+
+```bash
+sudo icarius ssh-host
+# Central Cloud:
+sudo icarius-cloud ssh-host
+```
+
+Ingrese el mismo DNS o IP y puerto SSH del formulario. Pida a TI que confirme
+una de las huellas mostradas y responda `s`. Vuelva al configurador y deje vacío
+**Identidad conocida del host**: el archivo ya quedó guardado y se reutiliza
+automáticamente. Repita el paso sólo si cambia el servidor o su puerto.
 ## Desinstalacion segura
 
 El instalador incorpora una vista previa y una confirmacion separada:
