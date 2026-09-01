@@ -92,6 +92,48 @@ detect_ssh_port() {
   printf '%s' "${detected:-22}"
 }
 
+package_backup_for_download() {
+  local backup_path="$1" parent base archive checksum temporary_archive temporary_checksum candidate
+  backup_path="$(realpath -e "$backup_path")"
+  case "$backup_path" in
+    "$install_root/backups"/storage-*) ;;
+    *) echo 'La carpeta del backup no pertenece al directorio administrado.' >&2; return 1 ;;
+  esac
+  [[ -d "$backup_path" && -f "$backup_path/manifest.json" ]] || { echo 'El backup verificado no esta completo.' >&2; return 1; }
+  command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 || {
+    echo 'Faltan herramientas del sistema para empaquetar el backup.' >&2
+    return 1
+  }
+  parent="$(dirname "$backup_path")"
+  base="$(basename "$backup_path")"
+  [[ "$base" =~ ^storage-[0-9TZ.-]+$ ]] || { echo 'El nombre del backup no es valido.' >&2; return 1; }
+  archive="$parent/$base.tar.gz"
+  checksum="$archive.sha256"
+  temporary_archive="$(mktemp "$parent/.$base.tar.gz.XXXXXX")"
+  temporary_checksum="$(mktemp "$parent/.$base.tar.gz.sha256.XXXXXX")"
+  if ! tar -C "$parent" -cf - "$base" | gzip -1 > "$temporary_archive"; then
+    rm -f -- "$temporary_archive" "$temporary_checksum"
+    echo 'No se pudo empaquetar el backup para descargarlo.' >&2
+    return 1
+  fi
+  if ! gzip -t "$temporary_archive" || ! tar -tzf "$temporary_archive" | grep -Fqx "$base/manifest.json"; then
+    rm -f -- "$temporary_archive" "$temporary_checksum"
+    echo 'El paquete descargable no supero la verificacion.' >&2
+    return 1
+  fi
+  printf '%s  %s\n' "$(sha256sum "$temporary_archive" | awk '{print $1}')" "$(basename "$archive")" > "$temporary_checksum"
+  chmod 0600 "$temporary_archive" "$temporary_checksum"
+  mv -f "$temporary_archive" "$archive"
+  mv -f "$temporary_checksum" "$checksum"
+  while IFS= read -r -d '' candidate; do
+    [[ "$candidate" == "$archive" || "$candidate" == "$checksum" ]] && continue
+    rm -f -- "$candidate"
+  done < <(find "$parent" -mindepth 1 -maxdepth 1 -type f \
+    \( -name 'storage-*.tar.gz' -o -name 'storage-*.tar.gz.sha256' \) -print0)
+  backup_archive="$archive"
+  backup_checksum="$checksum"
+}
+
 print_help() {
   local app_command preparer_command installer_name edition_label
   command_context
@@ -700,7 +742,7 @@ print_migration_download_instructions() {
 }
 
 backup_icarius() {
-  local destination="${3:-}" result backup_path preparer_root public_host ssh_port download_folder
+  local destination="${3:-}" result backup_path preparer_root public_host ssh_port download_folder backup_archive backup_checksum
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
   export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
   echo 'Creando y verificando el backup. Espere hasta ver la confirmacion final...'
@@ -720,6 +762,8 @@ backup_icarius() {
     echo 'El comprobante del backup no es valido.' >&2
     exit 1
   fi
+  echo 'Empaquetando el backup en un unico archivo para la descarga...'
+  package_backup_for_download "$backup_path" || exit 1
   case "$install_root" in
     /srv/icarius/onprem) preparer_root='/srv/icarius/preparer-onprem'; download_folder='ICARIUS-OnPremise-Backup' ;;
     /srv/icarius/cloud) preparer_root='/srv/icarius/preparer-cloud'; download_folder='ICARIUS-Cloud-Backup' ;;
@@ -730,12 +774,15 @@ backup_icarius() {
   ssh_port="$(detect_ssh_port)"
   echo 'Backup verificado correctamente.'
   echo "Carpeta: $backup_path"
+  echo "Paquete descargable: $backup_archive"
+  echo "Integridad SHA-256: $backup_checksum"
   echo 'El VPS conserva solamente este ultimo backup. Copielo antes de generar otro.'
   echo
   echo 'DESCARGA A SU PC'
   echo 'Ejecute en PowerShell desde su PC. Se solicitara la contrasena de root del VPS:'
   printf 'New-Item -ItemType Directory -Force "$HOME\\Downloads\\%s"\n' "$download_folder"
-  printf 'scp -r -P %s root@%s:"%s" "$HOME\\Downloads\\%s\\"\n' "$ssh_port" "$public_host" "$backup_path" "$download_folder"
+  printf 'scp -P %s root@%s:"%s" root@%s:"%s" "$HOME\\Downloads\\%s\\"\n' \
+    "$ssh_port" "$public_host" "$backup_archive" "$public_host" "$backup_checksum" "$download_folder"
 }
 
 export_migration() {
