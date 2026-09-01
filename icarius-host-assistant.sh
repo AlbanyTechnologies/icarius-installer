@@ -86,6 +86,12 @@ command_context() {
   esac
 }
 
+detect_ssh_port() {
+  local detected=''
+  detected="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')" || true
+  printf '%s' "${detected:-22}"
+}
+
 print_help() {
   local app_command preparer_command installer_name edition_label
   command_context
@@ -669,8 +675,7 @@ print_migration_download_instructions() {
   public_host="$(sed -n 's/^ICARIUS_PREPARER_PUBLIC_HOST=//p' "$preparer_root/preparer.env" 2>/dev/null | tail -1)"
   public_host="${public_host:-$(hostname -f 2>/dev/null || hostname)}"
   ssh_user='root'
-  ssh_port="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')"
-  ssh_port="${ssh_port:-22}"
+  ssh_port="$(detect_ssh_port)"
   echo
   echo 'DESCARGA A SU PC'
   echo 'Ejecute uno de estos bloques en su PC, no en el VPS.'
@@ -698,12 +703,23 @@ backup_icarius() {
   local destination="${3:-}" result backup_path preparer_root public_host ssh_port download_folder
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
   export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
+  echo 'Creando y verificando el backup. Espere hasta ver la confirmacion final...'
   if [[ -n "$destination" ]]; then
-    result="$("$install_root/bin/icarius" backup "$destination" --json)"
+    if ! result="$("$install_root/bin/icarius" backup "$destination" --json)"; then
+      echo 'No se pudo crear o verificar el backup.' >&2
+      exit 1
+    fi
   else
-    result="$("$install_root/bin/icarius" backup --json)"
+    if ! result="$("$install_root/bin/icarius" backup --json)"; then
+      echo 'No se pudo crear o verificar el backup.' >&2
+      exit 1
+    fi
   fi
-  backup_path="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["destination"])' <<<"$result")"
+  [[ -n "$result" ]] || { echo 'El backup termino sin devolver su comprobante.' >&2; exit 1; }
+  if ! backup_path="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["destination"])' <<<"$result")"; then
+    echo 'El comprobante del backup no es valido.' >&2
+    exit 1
+  fi
   case "$install_root" in
     /srv/icarius/onprem) preparer_root='/srv/icarius/preparer-onprem'; download_folder='ICARIUS-OnPremise-Backup' ;;
     /srv/icarius/cloud) preparer_root='/srv/icarius/preparer-cloud'; download_folder='ICARIUS-Cloud-Backup' ;;
@@ -711,8 +727,7 @@ backup_icarius() {
   esac
   public_host="$(sed -n 's/^ICARIUS_PREPARER_PUBLIC_HOST=//p' "$preparer_root/preparer.env" 2>/dev/null | tail -1)"
   public_host="${public_host:-$(hostname -f 2>/dev/null || hostname)}"
-  ssh_port="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')"
-  ssh_port="${ssh_port:-22}"
+  ssh_port="$(detect_ssh_port)"
   echo 'Backup verificado correctamente.'
   echo "Carpeta: $backup_path"
   echo 'El VPS conserva solamente este ultimo backup. Copielo antes de generar otro.'
