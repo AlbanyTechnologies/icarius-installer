@@ -364,8 +364,50 @@ PY
   echo 'La renovacion automatica de Certbot quedo habilitada.'
   [[ -n "$legacy_backup_dir" ]] && echo "Configuracion anterior respaldada en: $legacy_backup_dir"
 }
+cleanup_complete_docker_residues() {
+  local project="$1" edition="$2" volume repo tag id full_id image_ref candidate allowed
+  local volume_count=0 image_count=0 container_ids used_ids=''
+  local -a volumes repositories
+  case "$edition" in
+    on-premise) repositories=(icarius-onprem-api icarius-onprem-scheduler icarius-preparer-onprem icarius-ssh-tunnel) ;;
+    central-cloud) repositories=(icarius-cloud-api icarius-cloud-scheduler icarius-preparer-cloud icarius-ssh-tunnel) ;;
+    *) echo 'Edicion no autorizada para limpiar residuos Docker.' >&2; return 1 ;;
+  esac
+
+  mapfile -t volumes < <(docker volume ls --quiet --filter "label=com.docker.compose.project=$project")
+  for volume in "${volumes[@]}"; do
+    docker volume rm "$volume" >/dev/null || {
+      echo "No se pudo eliminar el volumen ICARIUS $volume." >&2
+      return 1
+    }
+    volume_count=$((volume_count + 1))
+  done
+
+  container_ids="$(docker ps --all --quiet)"
+  if [[ -n "$container_ids" ]]; then
+    used_ids="$(docker inspect --format '{{.Image}}' $container_ids 2>/dev/null || true)"
+  fi
+  while IFS='|' read -r repo tag id; do
+    allowed=false
+    for candidate in "${repositories[@]}"; do
+      [[ "$repo" == "ghcr.io/maxglomba/$candidate" ]] && { allowed=true; break; }
+    done
+    [[ "$allowed" == true ]] || continue
+    full_id="$(docker image inspect "$id" --format '{{.Id}}' 2>/dev/null || true)"
+    [[ -n "$full_id" ]] || continue
+    if grep -Fqx "$full_id" <<<"$used_ids"; then
+      continue
+    fi
+    if [[ "$tag" == '<none>' ]]; then image_ref="$id"; else image_ref="$repo:$tag"; fi
+    if docker image rm "$image_ref" >/dev/null 2>&1; then
+      image_count=$((image_count + 1))
+    fi
+  done < <(docker image ls --no-trunc --format '{{.Repository}}|{{.Tag}}|{{.ID}}')
+
+  printf 'Limpieza Docker: %s volumen(es) y %s referencia(s) de imagen ICARIUS eliminadas.\n' "$volume_count" "$image_count"
+}
 uninstall_icarius() {
-  local mode="${3:-}" app_command preparer_command preparer_root preparer_project docker_config_root secrets_root edition
+  local mode="${3:-}" app_command preparer_command preparer_root preparer_project runtime_project docker_config_root secrets_root edition
   local site_name available enabled backup preparer_port='' confirmation expected reclaimed_kib audit_file
   local export_dir exporter importer gate export_output package passphrase checksum verification_workspace
   local preview_json storage_root runtime_cli runtime_workspace='' runtime_container='' image
@@ -376,6 +418,7 @@ uninstall_icarius() {
       preparer_command='icarius-preparer'
       preparer_root='/srv/icarius/preparer-onprem'
       preparer_project='icarius-preparer-onprem'
+      runtime_project='icarius-cliente'
       docker_config_root='/root/.docker'
       secrets_root='/srv/icarius/preparer-secrets/onprem'
       edition='on-premise'
@@ -385,6 +428,7 @@ uninstall_icarius() {
       preparer_command='icarius-preparer-cloud'
       preparer_root='/srv/icarius/preparer-cloud'
       preparer_project='icarius-preparer-cloud'
+      runtime_project='icarius-cloud'
       docker_config_root='/root/.docker-cloud'
       secrets_root='/srv/icarius/preparer-secrets/cloud'
       edition='central-cloud'
@@ -572,7 +616,9 @@ uninstall_icarius() {
   if [[ "$mode" == complete ]]; then
     rm -rf "$install_root"
     case "$storage_root/" in "$install_root/"*) ;; *) rm -rf "$storage_root" ;; esac
+    cleanup_complete_docker_residues "$runtime_project" "$edition"
     rm -rf "$secrets_root" "$docker_config_root"
+    rmdir /srv/icarius/preparer-secrets 2>/dev/null || true
     audit_file="$export_dir/uninstall-complete-$(date -u +%Y%m%dT%H%M%SZ).log"
     {
       echo "edition=$edition"
