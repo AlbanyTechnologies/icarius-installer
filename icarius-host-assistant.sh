@@ -839,7 +839,8 @@ PY
   sap9_addon="${release_values[3]}"
   sap10_addon="${release_values[4]}"
   if [[ "${release_values[5]}" == true ]]; then
-    echo "ICARIUS $application_version - release $version ya esta activa."
+    echo "ICARIUS $application_version - release $version ya esta seleccionada. Verificando y recuperando sus servicios."
+    "$install_root/bin/icarius" start
     return
   fi
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Version autorizada invalida.' >&2; exit 1; }
