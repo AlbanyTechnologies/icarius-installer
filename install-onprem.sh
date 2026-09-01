@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 NODE_ROOT='/opt/icarius/node-v16.14.0-linux-x64'
 temporary=''
+assistant_install=''
 
 EDITION=${ICARIUS_BOOTSTRAP_EDITION:-onprem}
 case $EDITION in
@@ -40,6 +41,9 @@ PREPARER_MIN_VERSION='0.0.101'
 PREPARER_ACCESS_FILE="$INSTALL_ROOT/config/preparer-access.env"
 
 cleanup() {
+  if [[ -n "${assistant_install:-}" && -f "$assistant_install" ]]; then
+    rm -f -- "$assistant_install"
+  fi
   if [[ -n "${temporary:-}" && -d "$temporary" ]]; then
     rm -rf "$temporary"
   fi
@@ -70,6 +74,16 @@ preparer_defaults() {
     fallback_port="$stored_port"
   fi
   printf '%s\n%s\n' "$fallback_host" "$fallback_port"
+}
+
+select_preparer_version() {
+  TAGS_JSON="$1" python3 - <<'PY'
+import json, os, re
+tags = json.loads(os.environ["TAGS_JSON"]).get("tags") or []
+versions = [tag for tag in tags if re.fullmatch(r"\d+(?:\.\d+)+", tag)]
+if not versions: raise SystemExit("No hay versiones autorizadas.")
+print(max(versions, key=lambda value: tuple(int(part) for part in value.split("."))))
+PY
 }
 ask_secret() {
   local prompt="$1" answer
@@ -341,6 +355,11 @@ if [[ "${1:-}" == '--preparer-defaults' ]]; then
   preparer_defaults "$2" "$3" "$4"
   exit 0
 fi
+if [[ "${1:-}" == '--select-preparer-version' ]]; then
+  [[ $# -eq 2 ]] || fail 'Uso: --select-preparer-version JSON'
+  select_preparer_version "$2"
+  exit 0
+fi
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || fail 'Ejecute el comando con sudo.'
 [[ -r /etc/os-release ]] || fail 'No se pudo identificar el sistema operativo.'
@@ -418,8 +437,17 @@ if [[ ! -x "$NODE_ROOT/bin/node" ]]; then
   tar -xJf "$temporary/node.tar.xz" -C /opt/icarius
 fi
 HOST_ASSISTANT='/opt/icarius/icarius-host-assistant.sh'
-curl -fsSL https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/icarius-host-assistant.sh -o "$HOST_ASSISTANT"
-chmod 0755 "$HOST_ASSISTANT"
+assistant_candidate="$temporary/icarius-host-assistant.sh"
+curl -fsSL --retry 3 \
+  -H 'Cache-Control: no-cache' \
+  -H 'Pragma: no-cache' \
+  "https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/icarius-host-assistant.sh?nocache=$(date +%s)" \
+  -o "$assistant_candidate"
+bash -n "$assistant_candidate" || fail 'El asistente descargado no es valido; se conservo el asistente anterior.'
+assistant_install="$(mktemp /opt/icarius/.icarius-host-assistant.XXXXXX)"
+install -o root -g root -m 0755 "$assistant_candidate" "$assistant_install"
+mv -f "$assistant_install" "$HOST_ASSISTANT"
+assistant_install=''
 cat > "/usr/local/bin/$APP_COMMAND" <<EOF
 #!/usr/bin/env bash
 set -e
@@ -505,15 +533,8 @@ tags="$(curl -fsSL \
   -H @"$authorization_header_file" \
   -H 'Cache-Control: no-cache' \
   -H 'Pragma: no-cache' \
-  "https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/tags/list?nocache=$(date +%s)")"
-version="$(TAGS_JSON="$tags" python3 - <<'PY'
-import json, os, re
-tags = json.loads(os.environ["TAGS_JSON"]).get("tags") or []
-versions = [tag for tag in tags if re.fullmatch(r"\d+(?:\.\d+)+", tag)]
-if not versions: raise SystemExit("No hay versiones autorizadas.")
-print(max(versions, key=lambda value: tuple(int(part) for part in value.split("."))))
-PY
-)"
+  "https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/tags/list?n=10000&nocache=$(date +%s)")"
+version="$(select_preparer_version "$tags")"
 minimum_is_newer=$(python3 - $version $PREPARER_MIN_VERSION <<'PY'
 import sys
 current = tuple(int(part) for part in sys.argv[1].split('.'))
