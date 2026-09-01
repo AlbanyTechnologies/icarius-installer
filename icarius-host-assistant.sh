@@ -116,9 +116,15 @@ package_backup_for_download() {
     echo 'No se pudo empaquetar el backup para descargarlo.' >&2
     return 1
   fi
-  if ! gzip -t "$temporary_archive" || ! tar -tzf "$temporary_archive" | grep -Fqx "$base/manifest.json"; then
+  if ! gzip -t "$temporary_archive"; then
     rm -f -- "$temporary_archive" "$temporary_checksum"
-    echo 'El paquete descargable no supero la verificacion.' >&2
+    echo 'El paquete descargable no supero la verificacion de compresion.' >&2
+    return 1
+  fi
+  if ! tar -xOzf "$temporary_archive" "$base/manifest.json" | python3 -c \
+    'import json,sys; data=json.load(sys.stdin); assert data.get("kind") == "icarius-shared-storage"; assert isinstance(data.get("fileCount"), int); assert data.get("digest")'; then
+    rm -f -- "$temporary_archive" "$temporary_checksum"
+    echo 'El paquete descargable no contiene un manifiesto ICARIUS valido.' >&2
     return 1
   fi
   printf '%s  %s\n' "$(sha256sum "$temporary_archive" | awk '{print $1}')" "$(basename "$archive")" > "$temporary_checksum"
