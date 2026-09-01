@@ -36,7 +36,7 @@ case $EDITION in
     ;;
   *) printf 'ERROR: Edicion de bootstrap invalida.\n' >&2; exit 1 ;;
 esac
-PREPARER_MIN_VERSION='0.0.101'
+PREPARER_MIN_VERSION='0.0.102'
 PREPARER_ACCESS_FILE="$INSTALL_ROOT/config/preparer-access.env"
 
 cleanup() {
@@ -524,7 +524,7 @@ chmod 0600 "$authorization_header_file"
 tags_pages="$temporary/ghcr-tags-pages.jsonl"
 page_headers="$temporary/ghcr-tags.headers"
 page_body="$temporary/ghcr-tags.json"
-page_url="https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/tags/list?n=100&nocache=$(date +%s)"
+page_url="https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/tags/list?n=1000&nocache=$(date +%s)"
 : > "$tags_pages"
 for _ in $(seq 1 1000); do
   curl -fsSL -D "$page_headers" -o "$page_body" \
@@ -535,6 +535,10 @@ for _ in $(seq 1 1000); do
   tr -d '\r\n' < "$page_body" >> "$tags_pages"
   printf '\n' >> "$tags_pages"
   next_page="$(sed -n 's/^[Ll]ink: <\([^>]*\)>; rel="next".*/\1/p' "$page_headers" | tr -d '\r' | tail -n 1)"
+  page_size="$(python3 -c 'import json,sys; print(len((json.load(open(sys.argv[1], encoding="utf-8")).get("tags") or [])))' "$page_body")"
+  if [[ -z "$next_page" && "$page_size" -ge 1000 ]]; then
+    fail 'GHCR devolvio una pagina completa sin indicar la siguiente; se cancela para no elegir una version antigua.'
+  fi
   [[ -n "$next_page" ]] || break
   [[ "$next_page" == /v2/maxglomba/"$PREPARER_PACKAGE"/tags/list* ]] || fail 'GHCR devolvio una pagina de tags invalida.'
   page_url="https://ghcr.io$next_page"
@@ -552,7 +556,7 @@ if [[ $minimum_is_newer == yes ]]; then
   curl -fsSL -H @$authorization_header_file -H 'Accept: application/vnd.oci.image.index.v1+json' https://ghcr.io/v2/maxglomba/$PREPARER_PACKAGE/manifests/$PREPARER_MIN_VERSION >/dev/null || fail La version minima segura $PREPARER_MIN_VERSION no esta disponible para esta credencial.
   version=$PREPARER_MIN_VERSION
 fi
-unset read_token bearer tags_pages page_headers page_body page_url next_page
+unset read_token bearer tags_pages page_headers page_body page_url next_page page_size
 image="ghcr.io/maxglomba/$PREPARER_PACKAGE:$version"
 [[ "$version" =~ ^[0-9]+(\.[0-9]+)+$ ]] || fail 'Version autorizada invalida.'
 [[ "$image" == "ghcr.io/maxglomba/$PREPARER_PACKAGE:"* ]] || fail 'Imagen autorizada invalida.'
