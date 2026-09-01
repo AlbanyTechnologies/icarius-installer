@@ -347,7 +347,7 @@ if [[ "${1:-}" == '--decode-provisioning-code' ]]; then
   exit 0
 fi
 if [[ "${1:-}" == '--help' ]]; then
-  printf 'Uso: curl -fsSL https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-%s.sh | sudo bash\n' "$EDITION"
+  printf "Uso: curl -fsSL -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/install-%s.sh?ref=main' | sudo bash\n" "$EDITION"
   exit 0
 fi
 if [[ "${1:-}" == '--preparer-defaults' ]]; then
@@ -408,7 +408,7 @@ say '1/5 - Preparando el servidor'
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq || fail 'No se pudo actualizar el indice de paquetes. Revise DNS, firewall o proxy.'
 apt-get install -y -qq ca-certificates curl gnupg iproute2 python3 xz-utils zip >/dev/null
-check_outbound 'GitHub' "https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/install-$EDITION.sh"
+check_outbound 'GitHub' "https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/install-$EDITION.sh?ref=main"
 check_outbound 'GHCR' 'https://ghcr.io/v2/'
 if [[ ! -x "$NODE_ROOT/bin/node" ]]; then
   check_outbound 'Node.js' 'https://nodejs.org/dist/v16.14.0/SHASUMS256.txt'
@@ -439,9 +439,8 @@ fi
 HOST_ASSISTANT='/opt/icarius/icarius-host-assistant.sh'
 assistant_candidate="$temporary/icarius-host-assistant.sh"
 curl -fsSL --retry 3 \
-  -H 'Cache-Control: no-cache' \
-  -H 'Pragma: no-cache' \
-  "https://raw.githubusercontent.com/AlbanyTechnologies/icarius-installer/main/icarius-host-assistant.sh?nocache=$(date +%s)" \
+  -H 'Accept: application/vnd.github.raw+json' \
+  "https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/icarius-host-assistant.sh?ref=main" \
   -o "$assistant_candidate"
 bash -n "$assistant_candidate" || fail 'El asistente descargado no es valido; se conservo el asistente anterior.'
 assistant_install="$(mktemp /opt/icarius/.icarius-host-assistant.XXXXXX)"
