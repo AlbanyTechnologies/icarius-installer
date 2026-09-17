@@ -498,7 +498,7 @@ uninstall_icarius() {
     echo 'La instalacion no tiene runtime activo. Los datos persistentes no fueron modificados.' >&2
     exit 1
   }
-  export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
+  export PATH="/opt/icarius/node-v24.20.0-linux-x64/bin:$PATH"
   export DOCKER_CONFIG="$docker_config_root"
   runtime_cli="$install_root/bin/runtime/preparer/host-cli.js"
   if ! grep -Fq "command === 'uninstall'" "$runtime_cli" 2>/dev/null; then
@@ -509,8 +509,8 @@ uninstall_icarius() {
     }
     image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$preparer_root/preparer.env" | tail -1)"
     case "$edition" in
-      on-premise) [[ "$image" =~ ^ghcr\.io/maxglomba/icarius-preparer-onprem:[0-9]+\.[0-9]+\.[0-9]+$ ]] ;;
-      central-cloud) [[ "$image" =~ ^ghcr\.io/maxglomba/icarius-preparer-cloud:[0-9]+\.[0-9]+\.[0-9]+$ ]] ;;
+      on-premise) [[ "$image" =~ ^ghcr\.io/maxglomba/icarius-preparer-onprem:[0-9]+(\.[0-9]+)+$ ]] ;;
+      central-cloud) [[ "$image" =~ ^ghcr\.io/maxglomba/icarius-preparer-cloud:[0-9]+(\.[0-9]+)+$ ]] ;;
     esac || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo 'El Preparador actualizado no esta disponible localmente. Ejecute nuevamente el instalador de esta edicion.' >&2
@@ -750,7 +750,7 @@ print_migration_download_instructions() {
 backup_icarius() {
   local destination="${3:-}" result backup_path preparer_root public_host ssh_port download_folder backup_archive backup_checksum
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
-  export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
+  export PATH="/opt/icarius/node-v24.20.0-linux-x64/bin:$PATH"
   echo 'Creando y verificando el backup. Espere hasta ver la confirmacion final...'
   if [[ -n "$destination" ]]; then
     if ! result="$("$install_root/bin/icarius" backup "$destination" --json)"; then
@@ -794,7 +794,7 @@ backup_icarius() {
 export_migration() {
   local destination="${3:-}" exporter edition preparer_package preparer_root image export_output
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
-  export PATH="/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH"
+  export PATH="/opt/icarius/node-v24.20.0-linux-x64/bin:$PATH"
   exporter="$install_root/bin/runtime/ops/prepared-migration-export.js"
   if [[ -f "$exporter" ]]; then
     if [[ -n "$destination" ]]; then
@@ -831,7 +831,7 @@ PY
   [[ "$destination/" != "$install_root/"* ]] || { echo 'El destino de migracion debe estar fuera de la instalacion ICARIUS.' >&2; exit 1; }
   [[ -s "$preparer_root/preparer.env" ]] || { echo 'Falta la configuracion del Preparador. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
   image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$preparer_root/preparer.env" | tail -1)"
-  [[ "$image" =~ ^ghcr\.io/maxglomba/$preparer_package:[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
+  [[ "$image" =~ ^ghcr\.io/maxglomba/$preparer_package:[0-9]+(\.[0-9]+)+$ ]] || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
   docker image inspect "$image" >/dev/null 2>&1 || { echo 'El Preparador actualizado no esta disponible localmente. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
   install -d -o root -g root -m 0700 "$destination"
   echo 'La release activa es anterior al exportador Ubuntu; se usara el Preparer autorizado sin modificar la release.'
@@ -855,7 +855,7 @@ PY
 
 export_client() {
   [[ -x $install_root/bin/icarius ]] || { echo 'Primero complete el configurador ICARIUS.'; exit 1; }
-  export PATH=/opt/icarius/node-v16.14.0-linux-x64/bin:$PATH
+  export PATH=/opt/icarius/node-v24.20.0-linux-x64/bin:$PATH
   local exporter=$install_root/bin/runtime/ops/prepared-client-export.js
   [[ -f $exporter ]] || { echo 'La release instalada no incluye el exportador individual de clientes.'; exit 1; }
   if ! command -v zip; then
@@ -892,7 +892,7 @@ PY
   [[ -s "$secrets_root/ghcr_read_token" ]] || { echo 'Falta la credencial protegida de descarga GHCR.' >&2; exit 1; }
   [[ -s "$preparer_root/preparer.env" ]] || { echo 'Falta la configuracion del Preparador. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
   image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$preparer_root/preparer.env" | tail -1)"
-  [[ "$image" =~ ^ghcr\.io/maxglomba/$preparer_package:[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
+  [[ "$image" =~ ^ghcr\.io/maxglomba/$preparer_package:[0-9]+(\.[0-9]+)+$ ]] || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
   docker image inspect "$image" >/dev/null 2>&1 || { echo 'El Preparador actualizado no esta disponible localmente. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
   catalogs="$(docker run --rm --pull never --user 0:0 \
     -v "$install_root:/workspace" \
