@@ -162,6 +162,16 @@ offer_low_disk_cleanup() {
   if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     docker image prune -f || printf '%s\n' 'ADVERTENCIA - No se pudieron retirar todas las imagenes Docker colgantes.'
     docker builder prune -f || printf '%s\n' 'ADVERTENCIA - No se pudo retirar toda la cache de build Docker no utilizada.'
+    disk_kib="$(df -Pk / | awk 'NR == 2 {print $4}')"
+    if (( disk_kib < MIN_FREE_DISK_KIB )); then
+      printf '\n%s\n' 'La limpieza conservadora no alcanzo el minimo. Docker aun informa imagenes sin contenedores activos:'
+      docker system df -v || true
+      printf '%s\n' 'La limpieza ampliada no elimina volumenes ni contenedores activos.'
+      printf '%s\n' 'Puede retirar imagenes de rollback u otras aplicaciones detenidas; deberan descargarse nuevamente si se reutilizan.'
+      if confirm 'Desea retirar todas las imagenes Docker que no usa ningun contenedor'; then
+        docker image prune -a -f || printf '%s\n' 'ADVERTENCIA - No se pudieron retirar todas las imagenes Docker sin uso.'
+      fi
+    fi
   fi
 }
 host_capacity_preflight() {
