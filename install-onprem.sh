@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-NODE_ROOT='/opt/icarius/node-v16.14.0-linux-x64'
+NODE_ROOT='/opt/icarius/node-v24.20.0-linux-x64'
 temporary=''
 assistant_install=''
+MIN_FREE_DISK_KIB=10485760
+RECOMMENDED_FREE_DISK_KIB=20971520
 
 EDITION=${ICARIUS_BOOTSTRAP_EDITION:-onprem}
 case $EDITION in
@@ -115,7 +117,12 @@ capacity_report() {
     printf 'ADVERTENCIA - CPU: %s vCPU; compatible para instalaciones pequenas o validacion. Se recomiendan 4 o mas para produccion.\n' "$cpu"
   fi
   if (( memory_kib < 7864320 )); then printf 'BLOQUEADO - Memoria: se requieren 8 GiB nominales.\n'; blocked=1; fi
-  if (( disk_kib < 20971520 )); then printf 'BLOQUEADO - Disco: se requieren 20 GiB libres.\n'; blocked=1; fi
+  if (( disk_kib < MIN_FREE_DISK_KIB )); then
+    printf 'BLOQUEADO - Disco: se requieren al menos 10 GiB libres.\n'
+    blocked=1
+  elif (( disk_kib < RECOMMENDED_FREE_DISK_KIB )); then
+    awk -v kib=$disk_kib 'BEGIN { printf "ADVERTENCIA - Disco: %.1f GiB libres; 10 GiB es el minimo y se recomiendan 20 GiB para actualizaciones.\n", kib / 1048576 }'
+  fi
   if (( inodes < 100000 )); then printf 'BLOQUEADO - Disco: no hay inodos suficientes.\n'; blocked=1; fi
   if [[ "$systemd" != yes ]]; then printf 'BLOQUEADO - El host debe usar systemd.\n'; blocked=1; fi
   if [[ "$cgroups" != yes ]]; then printf 'BLOQUEADO - El host no expone cgroups compatibles.\n'; blocked=1; fi
@@ -125,6 +132,37 @@ capacity_report() {
   esac
   (( blocked == 0 )) || return 1
   printf 'APTO - Capacidad base compatible con ICARIUS.\n'
+}
+offer_low_disk_cleanup() {
+  local disk_kib="$1" command_name found_managed=false
+  awk -v kib="$disk_kib" 'BEGIN { printf "Espacio insuficiente: %.1f GiB libres; se requieren al menos 10 GiB.\n", kib / 1048576 }'
+  printf '%s\n' 'Puede liberar residuos administrados de ICARIUS y cache Docker no utilizada.'
+  printf '%s\n' 'No se eliminaran volumenes, contenedores activos, datos, migraciones ni backups manuales.'
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    docker system df || true
+  fi
+  for command_name in icarius icarius-cloud; do
+    if command -v "$command_name" >/dev/null 2>&1; then
+      found_managed=true
+      printf '\nVista previa de limpieza administrada (%s):\n' "$command_name"
+      "$command_name" cleanup --dry-run || printf 'ADVERTENCIA - %s no pudo calcular su limpieza administrada.\n' "$command_name"
+    fi
+  done
+  if ! confirm 'Desea ejecutar ahora la limpieza segura sugerida'; then
+    printf '%s\n' 'Limpieza omitida. Libere espacio y vuelva a ejecutar el asistente.'
+    return 0
+  fi
+  if [[ "$found_managed" == true ]]; then
+    for command_name in icarius icarius-cloud; do
+      if command -v "$command_name" >/dev/null 2>&1; then
+        "$command_name" cleanup --confirm || printf 'ADVERTENCIA - %s no pudo completar toda su limpieza administrada.\n' "$command_name"
+      fi
+    done
+  fi
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    docker image prune -f || printf '%s\n' 'ADVERTENCIA - No se pudieron retirar todas las imagenes Docker colgantes.'
+    docker builder prune -f || printf '%s\n' 'ADVERTENCIA - No se pudo retirar toda la cache de build Docker no utilizada.'
+  fi
 }
 host_capacity_preflight() {
   local cpu memory_kib memory_available_kib swap_kib disk_kib disk_total_kib inodes systemd cgroups virtualization ntp
@@ -139,6 +177,11 @@ host_capacity_preflight() {
   [[ -r /proc/self/cgroup && -d /sys/fs/cgroup ]] && cgroups=yes || cgroups=no
   virtualization="$(systemd-detect-virt 2>/dev/null || true)"
   virtualization="${virtualization:-none}"
+  if (( disk_kib < MIN_FREE_DISK_KIB )); then
+    offer_low_disk_cleanup "$disk_kib"
+    disk_kib="$(df -Pk / | awk 'NR == 2 {print $4}')"
+    inodes="$(df -Pi / | awk 'NR == 2 {print $4}')"
+  fi
   capacity_report "$cpu" "$memory_kib" "$disk_kib" "$inodes" "$systemd" "$cgroups" "$virtualization" || fail 'El servidor no cumple los requisitos minimos. Corrija los puntos BLOQUEADO y vuelva a ejecutar.'
   (( disk_total_kib >= 83886080 )) || printf 'ADVERTENCIA - Se recomiendan 80 GiB de disco total para imagenes, backups y actualizaciones.\n'
   (( memory_available_kib >= 4194304 )) || printf 'ADVERTENCIA - Hay menos de 4 GiB de memoria disponible; revise otros servicios del VPS.\n'
@@ -160,7 +203,7 @@ offer_swap_reserve() {
     return 0
   fi
   disk_kib="$(df -Pk / | awk 'NR == 2 {print $4}')"
-  (( disk_kib >= 23068672 )) || fail 'Se necesitan al menos 22 GiB libres para crear 2 GiB de swap y conservar el minimo operativo.'
+  (( disk_kib >= 12582912 )) || fail 'Se necesitan al menos 12 GiB libres para crear 2 GiB de swap y conservar el minimo operativo de 10 GiB.'
   if [[ -e "$swapfile" ]]; then
     [[ -f "$swapfile" ]] || fail "$swapfile existe pero no es un archivo regular. TI debe revisarlo."
     chmod 0600 "$swapfile"
@@ -411,7 +454,7 @@ apt-get install -y -qq ca-certificates curl gnupg iproute2 python3 xz-utils zip 
 check_outbound 'GitHub' "https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/install-$EDITION.sh?ref=main"
 check_outbound 'GHCR' 'https://ghcr.io/v2/'
 if [[ ! -x "$NODE_ROOT/bin/node" ]]; then
-  check_outbound 'Node.js' 'https://nodejs.org/dist/v16.14.0/SHASUMS256.txt'
+  check_outbound 'Node.js' 'https://nodejs.org/dist/v24.20.0/SHASUMS256.txt'
 fi
 if ! command -v docker >/dev/null 2>&1; then
   check_outbound 'Docker' 'https://download.docker.com/linux/ubuntu/gpg'
@@ -427,9 +470,9 @@ install -d -m 0700 -o root -g root "$DOCKER_CONFIG_ROOT"
 say '2/5 - Instalando el comando ICARIUS'
 if [[ ! -x "$NODE_ROOT/bin/node" ]]; then
   temporary="$(mktemp -d)"
-  curl -fsSL https://nodejs.org/dist/v16.14.0/SHASUMS256.txt -o "$temporary/SHASUMS256.txt"
-  curl -fsSL https://nodejs.org/dist/v16.14.0/node-v16.14.0-linux-x64.tar.xz -o "$temporary/node.tar.xz"
-  expected_sha256="$(awk '$2 == "node-v16.14.0-linux-x64.tar.xz" {print $1}' "$temporary/SHASUMS256.txt")"
+  curl -fsSL https://nodejs.org/dist/v24.20.0/SHASUMS256.txt -o "$temporary/SHASUMS256.txt"
+  curl -fsSL https://nodejs.org/dist/v24.20.0/node-v24.20.0-linux-x64.tar.xz -o "$temporary/node.tar.xz"
+  expected_sha256="$(awk '$2 == "node-v24.20.0-linux-x64.tar.xz" {print $1}' "$temporary/SHASUMS256.txt")"
   [[ -n "$expected_sha256" ]] || fail 'No se encontro la suma SHA-256 oficial de Node.js.'
   actual_sha256="$(sha256sum "$temporary/node.tar.xz" | awk '{print $1}')"
   [[ "$actual_sha256" == "$expected_sha256" ]] || fail 'La suma SHA-256 del archivo de Node.js no coincide.'
