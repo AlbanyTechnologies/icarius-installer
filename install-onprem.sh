@@ -169,10 +169,29 @@ offer_low_disk_cleanup() {
       printf '%s\n' 'La limpieza ampliada no elimina volumenes ni contenedores activos.'
       printf '%s\n' 'Puede retirar imagenes de rollback u otras aplicaciones detenidas; deberan descargarse nuevamente si se reutilizan.'
       if confirm 'Desea retirar todas las imagenes Docker que no usa ningun contenedor'; then
-        docker image prune -a -f || printf '%s\n' 'ADVERTENCIA - No se pudieron retirar todas las imagenes Docker sin uso.'
+        prune_unused_images_preserving_preparers || printf '%s\n' 'ADVERTENCIA - No se pudieron retirar todas las imagenes Docker sin uso.'
       fi
     fi
   fi
+}
+prune_unused_images_preserving_preparers() {
+  local env_file protected_image protector_id status=0
+  local -a protectors=()
+  for env_file in /srv/icarius/preparer-onprem/preparer.env /srv/icarius/preparer-cloud/preparer.env; do
+    [[ -s "$env_file" ]] || continue
+    protected_image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$env_file" | tail -1)"
+    [[ "$protected_image" =~ ^ghcr\.io/maxglomba/icarius-preparer-(onprem|cloud):[0-9]+(\.[0-9]+)+$ ]] || continue
+    docker image inspect "$protected_image" >/dev/null 2>&1 || continue
+    protector_id="$(docker create --entrypoint /bin/true "$protected_image" 2>/dev/null)" || {
+      printf 'ADVERTENCIA - No se pudo proteger temporalmente %s; se omitio la limpieza ampliada.\n' "$protected_image" >&2
+      status=1
+      break
+    }
+    protectors+=("$protector_id")
+  done
+  if (( status == 0 )); then docker image prune -a -f || status=$?; fi
+  if (( ${#protectors[@]} )); then docker container rm "${protectors[@]}" >/dev/null 2>&1 || true; fi
+  return "$status"
 }
 host_capacity_preflight() {
   local cpu memory_kib memory_available_kib swap_kib disk_kib disk_total_kib inodes systemd cgroups virtualization ntp

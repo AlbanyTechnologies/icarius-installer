@@ -68,6 +68,82 @@ confirm() {
   [[ "$answer" == s || "$answer" == S ]]
 }
 
+ghcr_failure() {
+  local phase="$1" diagnostic="$2"
+  if grep -Eqi 'timeout|timed out|deadline exceeded|i/o timeout|TLS handshake timeout|connection reset|temporary failure|network is unreachable' "$diagnostic"; then
+    echo "GHCR no respondio a tiempo durante $phase. Revise conectividad, DNS, proxy y firewall; no se modifico la instalacion." >&2
+  elif grep -Eqi 'manifest unknown|not found|unknown blob|no such manifest' "$diagnostic"; then
+    echo "GHCR no contiene el digest inmutable requerido durante $phase. La release no esta completa; no se modifico la instalacion." >&2
+  elif [[ "$phase" == 'la autenticacion' ]] && grep -Eqi 'denied|forbidden|permission_denied|unauthorized|incorrect username or password' "$diagnostic"; then
+    echo 'GHCR rechazo el token protegido: la credencial es invalida o fue revocada. No se modifico la instalacion.' >&2
+  elif grep -Eqi 'read_package|insufficient_scope' "$diagnostic"; then
+    echo "La credencial GHCR no tiene el alcance read:packages requerido durante $phase. No se modifico la instalacion." >&2
+  elif grep -Eqi 'denied|forbidden|permission_denied|unauthorized' "$diagnostic"; then
+    echo "La cuenta GHCR no esta autorizada para leer el paquete requerido durante $phase. No se modifico la instalacion." >&2
+  else
+    echo "GHCR rechazo la operacion durante $phase. Verifique que el token protegido sea valido y tenga read:packages; no se modifico la instalacion." >&2
+  fi
+  return 1
+}
+
+authenticate_ghcr() {
+  local username="$1" token_file="$2" docker_config_root="$3" diagnostic
+  [[ -s "$token_file" ]] || { echo 'Falta la credencial protegida de descarga GHCR.' >&2; return 1; }
+  install -d -o root -g root -m 0700 "$docker_config_root"
+  chmod 0700 "$docker_config_root"
+  diagnostic="$(mktemp)"
+  if ! env HOME=/root DOCKER_CONFIG="$docker_config_root" docker login ghcr.io -u "$username" --password-stdin \
+      < "$token_file" >/dev/null 2>"$diagnostic"; then
+    ghcr_failure 'la autenticacion' "$diagnostic" || true
+    rm -f -- "$diagnostic"
+    return 1
+  fi
+  rm -f -- "$diagnostic"
+}
+
+pull_authorized_image() {
+  local image="$1" label="$2" docker_config_root="$3" diagnostic
+  diagnostic="$(mktemp)"
+  if ! env HOME=/root DOCKER_CONFIG="$docker_config_root" docker pull "$image" >/dev/null 2>"$diagnostic"; then
+    ghcr_failure "$label" "$diagnostic" || true
+    rm -f -- "$diagnostic"
+    return 1
+  fi
+  rm -f -- "$diagnostic"
+  docker image inspect "$image" >/dev/null 2>&1 || {
+    echo "Docker no pudo verificar localmente $label despues de descargarla; no se modifico la instalacion." >&2
+    return 1
+  }
+}
+
+ensure_preparer_image() {
+  local image="$1" docker_config_root="$2"
+  if docker image inspect "$image" >/dev/null 2>&1; then return 0; fi
+  echo 'La imagen del Preparador no estaba local; se recuperara desde GHCR.'
+  pull_authorized_image "$image" 'la imagen del Preparador' "$docker_config_root"
+}
+
+preflight_release_images() {
+  local docker_config_root="$1" edition="$2"
+  shift 2
+  local reference package
+  [[ "$#" -eq 3 ]] || { echo 'El catalogo autorizado no declaro las tres imagenes requeridas.' >&2; return 1; }
+  for reference in "$@"; do
+    [[ "$reference" =~ ^ghcr\.io/maxglomba/([a-z0-9-]+)@sha256:[a-f0-9]{64}$ ]] || {
+      echo 'El catalogo autorizado contiene una referencia de imagen invalida.' >&2
+      return 1
+    }
+    package="${BASH_REMATCH[1]}"
+    case "$edition:$package" in
+      on-premise:icarius-onprem-api|on-premise:icarius-onprem-scheduler|on-premise:icarius-ssh-tunnel|central-cloud:icarius-cloud-api|central-cloud:icarius-cloud-scheduler|central-cloud:icarius-ssh-tunnel) ;;
+      *) echo "El catalogo autorizado contiene un paquete ajeno a la edicion $edition." >&2; return 1 ;;
+    esac
+  done
+  echo 'Prevalidando acceso a las imagenes inmutables de la release...'
+  for reference in "$@"; do pull_authorized_image "$reference" "la descarga de ${reference%%@*}" "$docker_config_root" || return 1; done
+  echo 'APTO - Credencial GHCR e imagenes inmutables verificadas antes del backup.'
+}
+
 command_context() {
   case "$install_root" in
     /srv/icarius/onprem)
@@ -379,7 +455,7 @@ PY
     echo '        proxy_set_header X-Forwarded-Proto $scheme;'
     echo '        proxy_set_header Upgrade $http_upgrade;'
     echo '        proxy_set_header Connection upgrade;'
-    echo '        proxy_read_timeout 600s;'
+    echo '        proxy_read_timeout 3600s;'
     echo '    }'
     echo '}'
   } > "$temporary"
@@ -876,7 +952,8 @@ export_client() {
 }
 
 manage_version() {
-  local edition preparer_package preparer_root secrets_root catalogs selected version application_version addon_release sap9_addon sap10_addon installed_addon expected_addon warning_flag current_application image
+  local edition preparer_package preparer_root secrets_root docker_config_root registry_user catalogs selected version application_version addon_release sap9_addon sap10_addon installed_addon expected_addon warning_flag current_application image
+  local api_image scheduler_image tunnel_image
   local runtime_workspace runtime_container runtime_cli runtime_layout start_status
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
   edition="$(python3 - "$install_root/config/installation-state.json" <<'PY'
@@ -885,15 +962,16 @@ print(json.load(open(sys.argv[1], encoding='utf-8'))['edition'])
 PY
 )"
   case "$edition" in
-    on-premise) preparer_package='icarius-preparer-onprem'; preparer_root='/srv/icarius/preparer-onprem'; secrets_root='/srv/icarius/preparer-secrets/onprem' ;;
-    central-cloud) preparer_package='icarius-preparer-cloud'; preparer_root='/srv/icarius/preparer-cloud'; secrets_root='/srv/icarius/preparer-secrets/cloud' ;;
+    on-premise) preparer_package='icarius-preparer-onprem'; preparer_root='/srv/icarius/preparer-onprem'; secrets_root='/srv/icarius/preparer-secrets/onprem'; docker_config_root='/root/.docker'; registry_user='soporteicarius' ;;
+    central-cloud) preparer_package='icarius-preparer-cloud'; preparer_root='/srv/icarius/preparer-cloud'; secrets_root='/srv/icarius/preparer-secrets/cloud'; docker_config_root='/root/.docker-cloud'; registry_user='adminicarius' ;;
     *) echo 'La edicion instalada no es valida.' >&2; exit 1 ;;
   esac
   [[ -s "$secrets_root/ghcr_read_token" ]] || { echo 'Falta la credencial protegida de descarga GHCR.' >&2; exit 1; }
   [[ -s "$preparer_root/preparer.env" ]] || { echo 'Falta la configuracion del Preparador. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
   image="$(sed -n 's/^ICARIUS_PREPARER_IMAGE=//p' "$preparer_root/preparer.env" | tail -1)"
   [[ "$image" =~ ^ghcr\.io/maxglomba/$preparer_package:[0-9]+(\.[0-9]+)+$ ]] || { echo 'La imagen configurada del Preparador no es valida.' >&2; exit 1; }
-  docker image inspect "$image" >/dev/null 2>&1 || { echo 'El Preparador actualizado no esta disponible localmente. Ejecute nuevamente el instalador de esta edicion.' >&2; exit 1; }
+  authenticate_ghcr "$registry_user" "$secrets_root/ghcr_read_token" "$docker_config_root" || exit 1
+  ensure_preparer_image "$image" "$docker_config_root" || exit 1
   catalogs="$(docker run --rm --pull never --user 0:0 \
     -v "$install_root:/workspace" \
     -v "$secrets_root:/run/secrets:ro" \
@@ -929,15 +1007,20 @@ PY
 import json, sys
 items=json.loads(sys.argv[1]); index=int(sys.argv[2])-1
 if index < 0 or index >= len(items): raise SystemExit(2)
-item=items[index]; prerequisite=item.get('databasePrerequisite', {}); versions=prerequisite.get('addonVersions', {})
-print(item['version']); print(item['applicationVersion']); print(prerequisite.get('addonRelease', '')); print(versions.get('sap9', '')); print(versions.get('sap10', '')); print('true' if item.get('current') else 'false')
+item=items[index]; prerequisite=item.get('databasePrerequisite', {}); versions=prerequisite.get('addonVersions', {}); images=item.get('images', {})
+print(item['version']); print(item['applicationVersion']); print(prerequisite.get('addonRelease', '')); print(versions.get('sap9', '')); print(versions.get('sap10', '')); print('true' if item.get('current') else 'false'); print(images.get('api', '')); print(images.get('scheduler', '')); print(images.get('sshTunnel', ''))
 PY
 ) || { echo 'La version seleccionada no existe.' >&2; exit 1; }
+  [[ "${#release_values[@]}" -eq 9 ]] || { echo 'El catalogo autorizado no incluye todas las imagenes inmutables requeridas. Actualice el Preparador.' >&2; exit 1; }
   version="${release_values[0]}"
   application_version="${release_values[1]}"
   addon_release="${release_values[2]}"
   sap9_addon="${release_values[3]}"
   sap10_addon="${release_values[4]}"
+  api_image="${release_values[6]}"
+  scheduler_image="${release_values[7]}"
+  tunnel_image="${release_values[8]}"
+  preflight_release_images "$docker_config_root" "$edition" "$api_image" "$scheduler_image" "$tunnel_image" || exit 1
   if [[ "${release_values[5]}" == true ]]; then
     echo "ICARIUS $application_version - release $version ya esta seleccionada. Verificando y recuperando sus servicios."
     "$install_root/bin/icarius" start
