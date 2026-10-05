@@ -512,7 +512,9 @@ HOST_ASSISTANT='/opt/icarius/icarius-host-assistant.sh'
 assistant_candidate="$temporary/icarius-host-assistant.sh"
 curl -fsSL --retry 3 \
   -H 'Accept: application/vnd.github.raw+json' \
-  "https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/icarius-host-assistant.sh?ref=main" \
+  -H 'Cache-Control: no-cache' \
+  -H 'Pragma: no-cache' \
+  "https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/icarius-host-assistant.sh?ref=main&nocache=$(date +%s)" \
   -o "$assistant_candidate"
 bash -n "$assistant_candidate" || fail 'El asistente descargado no es valido; se conservo el asistente anterior.'
 assistant_install="$(mktemp /opt/icarius/.icarius-host-assistant.XXXXXX)"

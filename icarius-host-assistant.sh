@@ -265,9 +265,13 @@ update_preparer() {
   command -v curl >/dev/null 2>&1 || { echo 'Falta curl para actualizar el Preparador.' >&2; exit 1; }
   temporary="$(mktemp)"
   trap 'rm -f -- "$temporary"' RETURN
-  installer_url="https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/$installer_name?ref=main"
+  installer_url="https://api.github.com/repos/AlbanyTechnologies/icarius-installer/contents/$installer_name?ref=main&nocache=$(date +%s)"
   echo "Actualizando el Preparador ICARIUS $edition_label..."
-  curl -fsSL --retry 3 -H 'Accept: application/vnd.github.raw+json' "$installer_url" -o "$temporary"
+  curl -fsSL --retry 3 \
+    -H 'Accept: application/vnd.github.raw+json' \
+    -H 'Cache-Control: no-cache' \
+    -H 'Pragma: no-cache' \
+    "$installer_url" -o "$temporary"
   bash -n "$temporary" || { echo 'El instalador descargado no es valido; no se modifico el Preparador.' >&2; exit 1; }
   bash "$temporary"
 }

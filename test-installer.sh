@@ -15,7 +15,11 @@ fi
 grep -Fq "PREPARER_MIN_VERSION='0.0.101'" "$installer"
 grep -Fq 'tags/list?n=10000' "$installer"
 grep -Fq 'prune_unused_images_preserving_preparers()' "$installer"
+grep -Fq "Cache-Control: no-cache" "$installer"
+grep -Fq 'icarius-host-assistant.sh?ref=main&nocache=$(date +%s)' "$installer"
+grep -Fq 'install-onprem.sh?ref=main&nocache=$(date +%s)' "$root/install-cloud.sh"
 grep -Fq 'ensure_preparer_image()' "$root/icarius-host-assistant.sh"
 grep -Fq 'preflight_release_images()' "$root/icarius-host-assistant.sh"
+grep -Fq 'nocache=$(date +%s)' "$root/icarius-host-assistant.sh"
 grep -Fq 'APTO - Credencial GHCR e imagenes inmutables verificadas antes del backup.' "$root/icarius-host-assistant.sh"
 echo 'OK installer: seleccion semantica, bootstrap y preflight GHCR'
