@@ -239,6 +239,7 @@ Consulta y operacion diaria:
 Versiones:
   update                         Instala la ultima version ICARIUS autorizada.
   change-version                 Permite elegir una version autorizada.
+  schema-control                 Revisa y corrige un catalogo HANA Chile con el snapshot activo.
   rollback                       Vuelve a la version instalada anterior.
   update-preparer                Actualiza y abre el configurador visual.
 
@@ -956,7 +957,7 @@ export_client() {
 }
 
 manage_version() {
-  local edition preparer_package preparer_root secrets_root docker_config_root registry_user catalogs selected version application_version addon_release sap9_addon sap10_addon installed_addon expected_addon warning_flag current_application image
+  local edition preparer_package preparer_root secrets_root docker_config_root registry_user catalogs selected version application_version prerequisite_kind structure_version snapshot_hash marker_parameter addon_release sap9_addon sap10_addon installed_addon expected_addon warning_flag schema_control_status current_application image
   local api_image scheduler_image tunnel_image
   local runtime_workspace runtime_container runtime_cli runtime_layout start_status
   [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
@@ -1011,45 +1012,59 @@ PY
 import json, sys
 items=json.loads(sys.argv[1]); index=int(sys.argv[2])-1
 if index < 0 or index >= len(items): raise SystemExit(2)
-item=items[index]; prerequisite=item.get('databasePrerequisite', {}); versions=prerequisite.get('addonVersions', {}); images=item.get('images', {})
-print(item['version']); print(item['applicationVersion']); print(prerequisite.get('addonRelease', '')); print(versions.get('sap9', '')); print(versions.get('sap10', '')); print('true' if item.get('current') else 'false'); print(images.get('api', '')); print(images.get('scheduler', '')); print(images.get('sshTunnel', ''))
+item=items[index]; prerequisite=item.get('databasePrerequisite', {}); schema=prerequisite.get('schemaSnapshot', {}); versions=prerequisite.get('addonVersions', {}); images=item.get('images', {})
+kind='schema' if schema else ('addon' if prerequisite.get('addonRelease') else 'legacy')
+print(item['version']); print(item['applicationVersion']); print(kind); print(schema.get('structureVersion', '')); print(schema.get('hash', '')); print(schema.get('markerParameter', '')); print(prerequisite.get('addonRelease', '')); print(versions.get('sap9', '')); print(versions.get('sap10', '')); print('true' if item.get('current') else 'false'); print(images.get('api', '')); print(images.get('scheduler', '')); print(images.get('sshTunnel', ''))
 PY
 ) || { echo 'La version seleccionada no existe.' >&2; exit 1; }
-  [[ "${#release_values[@]}" -eq 9 ]] || { echo 'El catalogo autorizado no incluye todas las imagenes inmutables requeridas. Actualice el Preparador.' >&2; exit 1; }
+  [[ "${#release_values[@]}" -eq 13 ]] || { echo 'El catalogo autorizado no incluye todas las imagenes inmutables requeridas. Actualice el Preparador.' >&2; exit 1; }
   version="${release_values[0]}"
   application_version="${release_values[1]}"
-  addon_release="${release_values[2]}"
-  sap9_addon="${release_values[3]}"
-  sap10_addon="${release_values[4]}"
-  api_image="${release_values[6]}"
-  scheduler_image="${release_values[7]}"
-  tunnel_image="${release_values[8]}"
+  prerequisite_kind="${release_values[2]}"
+  structure_version="${release_values[3]}"
+  snapshot_hash="${release_values[4]}"
+  marker_parameter="${release_values[5]}"
+  addon_release="${release_values[6]}"
+  sap9_addon="${release_values[7]}"
+  sap10_addon="${release_values[8]}"
+  api_image="${release_values[10]}"
+  scheduler_image="${release_values[11]}"
+  tunnel_image="${release_values[12]}"
   preflight_release_images "$docker_config_root" "$edition" "$api_image" "$scheduler_image" "$tunnel_image" || exit 1
-  if [[ "${release_values[5]}" == true ]]; then
+  if [[ "${release_values[9]}" == true ]]; then
     echo "ICARIUS $application_version - release $version ya esta seleccionada. Verificando y recuperando sus servicios."
     "$install_root/bin/icarius" start
     return
   fi
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Version autorizada invalida.' >&2; exit 1; }
-  [[ "$addon_release" =~ ^[0-9][0-9][0-9][0-9]$ && "$sap9_addon" == "9.00.$addon_release" && "$sap10_addon" == "10.00.$addon_release" ]] || { echo 'La version autorizada no declara correctamente el add-on requerido.' >&2; exit 1; }
-  echo 'Add-on requerido por esta version:'
-  echo "  SAP 9:  $sap9_addon"
-  echo "  SAP 10: $sap10_addon"
-  while true; do
-    read -r -p 'Version del add-on aplicada (9.00.XXXX o 10.00.XXXX): ' installed_addon </dev/tty
-    [[ "$installed_addon" =~ ^9\.00\.[0-9][0-9][0-9][0-9]$ || "$installed_addon" =~ ^10\.00\.[0-9][0-9][0-9][0-9]$ ]] && break
-    echo 'Formato invalido. Ejemplos: 9.00.0035 o 10.00.0035.' >&2
-  done
-  if [[ "$installed_addon" == 9.* ]]; then expected_addon="$sap9_addon"; else expected_addon="$sap10_addon"; fi
   warning_flag=''
-  if [[ "$installed_addon" != "$expected_addon" ]]; then
-    echo
-    echo 'ADVERTENCIA: el add-on informado no coincide con el requerido.' >&2
-    echo "  Informado: $installed_addon" >&2
-    echo "  Requerido: $expected_addon" >&2
-    echo 'ICARIUS puede generar errores si continua sin aplicar el add-on correcto.' >&2
-    confirm 'Continuar igualmente bajo esta advertencia' || { echo 'Actualizacion cancelada. No se realizaron cambios.'; return; }
-    warning_flag='--accept-addon-warning'
+  schema_control_status=''
+  if [[ "$prerequisite_kind" == schema ]]; then
+    [[ "$structure_version" =~ ^hana-cl-[0-9A-Za-z._-]+$ && "$snapshot_hash" =~ ^[a-f0-9]{64}$ && "$marker_parameter" == ICARIUS_SCHEMA_CL ]] || { echo 'La version autorizada no declara correctamente el snapshot HANA Chile.' >&2; exit 1; }
+    echo 'Snapshot estructural incluido en esta version:'
+    echo "  Version: $structure_version"
+    echo "  Hash:    $snapshot_hash"
+    echo "  Registro: @A1A_PG_PGRL / $marker_parameter"
+  else
+    [[ "$addon_release" =~ ^[0-9][0-9][0-9][0-9]$ && "$sap9_addon" == "9.00.$addon_release" && "$sap10_addon" == "10.00.$addon_release" ]] || { echo 'La version historica no declara correctamente el add-on requerido.' >&2; exit 1; }
+    echo 'Add-on requerido por esta version historica:'
+    echo "  SAP 9:  $sap9_addon"
+    echo "  SAP 10: $sap10_addon"
+    while true; do
+      read -r -p 'Version del add-on aplicada (9.00.XXXX o 10.00.XXXX): ' installed_addon </dev/tty
+      [[ "$installed_addon" =~ ^9\.00\.[0-9][0-9][0-9][0-9]$ || "$installed_addon" =~ ^10\.00\.[0-9][0-9][0-9][0-9]$ ]] && break
+      echo 'Formato invalido. Ejemplos: 9.00.0035 o 10.00.0035.' >&2
+    done
+    if [[ "$installed_addon" == 9.* ]]; then expected_addon="$sap9_addon"; else expected_addon="$sap10_addon"; fi
+    if [[ "$installed_addon" != "$expected_addon" ]]; then
+      echo
+      echo 'ADVERTENCIA: el add-on informado no coincide con el requerido.' >&2
+      echo "  Informado: $installed_addon" >&2
+      echo "  Requerido: $expected_addon" >&2
+      echo 'ICARIUS puede generar errores si continua sin aplicar el add-on correcto.' >&2
+      confirm 'Continuar igualmente bajo esta advertencia' || { echo 'Actualizacion cancelada. No se realizaron cambios.'; return; }
+      warning_flag='--accept-addon-warning'
+    fi
   fi
   echo 'ICARIUS creara y verificara un backup integral antes de aplicar la actualizacion.'
   echo "Preparando ICARIUS $application_version - release $version"
@@ -1078,8 +1093,27 @@ PY
     echo 'La imagen autorizada no contiene el runtime completo de actualizacion.' >&2
     exit 1
   }
+  if [[ "$prerequisite_kind" == schema ]]; then
+    schema_control_status='skipped'
+    if confirm 'Ejecutar ahora el control de estructura HANA Chile'; then
+      schema_control_status='completed'
+      if ! node "$runtime_cli" schema-control "$install_root/releases/release-$version" --root "$install_root"; then
+        schema_control_status='failed'
+        echo 'El control estructural no finalizo correctamente.' >&2
+        confirm 'Continuar igualmente con la actualizacion' || {
+          rm -rf -- "$runtime_workspace"
+          echo 'Actualizacion cancelada antes del backup y sin cambiar la version activa.'
+          return
+        }
+      fi
+    else
+      echo 'Control estructural omitido por el operador; la decision quedara registrada con la actualizacion.'
+    fi
+  fi
   start_status=0
-  if [[ -n "$warning_flag" ]]; then
+  if [[ "$prerequisite_kind" == schema ]]; then
+    node "$runtime_cli" start --schema-control-status "$schema_control_status" --root "$install_root" || start_status=$?
+  elif [[ -n "$warning_flag" ]]; then
     node "$runtime_cli" start --addon-version "$installed_addon" "$warning_flag" --root "$install_root" || start_status=$?
   else
     node "$runtime_cli" start --addon-version "$installed_addon" --root "$install_root" || start_status=$?
@@ -1096,6 +1130,18 @@ PY
   fi
   rm -rf -- "$runtime_workspace"
   echo 'Runtime de gestion actualizado.'
+}
+
+schema_control_current() {
+  [[ -x "$install_root/bin/icarius" ]] || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
+  local current
+  current="$(python3 - "$install_root/config/host-state.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding='utf-8')).get('current', ''))
+PY
+)"
+  [[ "$current" =~ ^release-[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'No hay una release activa valida.' >&2; exit 1; }
+  "$install_root/bin/icarius" schema-control "$install_root/releases/$current"
 }
 
 rollback_version() {
@@ -1146,6 +1192,7 @@ case "$command_name" in
   export-migration) export_migration "$@" ;;
   backup) backup_icarius "$@" ;;
   export-client) export_client "$@" ;;
+  schema-control) schema_control_current ;;
   update|change-version) manage_version ;;
   rollback) rollback_version ;;
   *) echo 'Comando desconocido. Ejecute con help para ver las opciones disponibles.' >&2; exit 1 ;;
