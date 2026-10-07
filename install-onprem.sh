@@ -526,7 +526,7 @@ cat > "/usr/local/bin/$APP_COMMAND" <<EOF
 set -e
 export DOCKER_CONFIG="$DOCKER_CONFIG_ROOT"
 export PATH="$NODE_ROOT/bin:\$PATH"
-if [[ "\${1:-}" == help || "\${1:-}" == -h || "\${1:-}" == --help || "\${1:-}" == update-preparer || "\${1:-}" == setup-web || "\${1:-}" == ssh-host || "\${1:-}" == update || "\${1:-}" == change-version || "\${1:-}" == rollback || "\${1:-}" == backup || "\${1:-}" == export-migration || "\${1:-}" == export-client || "\${1:-}" == uninstall ]]; then
+if [[ "\${1:-}" == help || "\${1:-}" == -h || "\${1:-}" == --help || "\${1:-}" == update-preparer || "\${1:-}" == setup-web || "\${1:-}" == ssh-host || "\${1:-}" == schema-control || "\${1:-}" == update || "\${1:-}" == change-version || "\${1:-}" == rollback || "\${1:-}" == backup || "\${1:-}" == export-migration || "\${1:-}" == export-client || "\${1:-}" == uninstall ]]; then
   exec "$HOST_ASSISTANT" "\${1:-}" "$INSTALL_ROOT" "\${2:-}"
 fi
 test -x "$INSTALL_ROOT/bin/icarius" || { echo 'Primero complete el configurador ICARIUS.' >&2; exit 1; }
